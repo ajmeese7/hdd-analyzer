@@ -21,6 +21,7 @@ from hdd_analyzer.config import (
     is_var_child_skip,
     should_hash_content,
 )
+from hdd_analyzer.paths import from_extended_path, to_extended_path
 
 PROGRESS_INTERVAL = 5000
 
@@ -117,6 +118,7 @@ def _iter_dirs_and_files(root: Path, error_log: list[str]) -> Iterator[tuple[Pat
     (st_dev, st_ino) of every directory already descended into, which also
     catches cycles introduced by non-Windows bind/UNC mounts.
     """
+    root = Path(to_extended_path(str(root)))
     visited: set[tuple[int, int]] = set()
     root_identity = dir_identity(root)
     if root_identity is not None:
@@ -182,6 +184,7 @@ def walk_many(roots: list[Path], run_dir: Path) -> WalkSummary:
 
     with open(inventory_path, "w", encoding="utf-8") as out:
         for root in roots:
+            extended_root = Path(to_extended_path(str(root)))
             for path, is_dir in _iter_dirs_and_files(root, error_log):
                 if is_dir:
                     continue
@@ -215,10 +218,10 @@ def walk_many(roots: list[Path], run_dir: Path) -> WalkSummary:
                     dup_of = seen_keys[key]
                     summary.duplicates += 1
                 else:
-                    seen_keys[key] = str(path)
+                    seen_keys[key] = from_extended_path(str(path))
 
                 record = InventoryRecord(
-                    path=str(path),
+                    path=from_extended_path(str(path)),
                     size=size,
                     mtime=mtime,
                     ext=ext,
@@ -230,7 +233,7 @@ def walk_many(roots: list[Path], run_dir: Path) -> WalkSummary:
                 summary.scanned += 1
                 summary.bytes_by_category[category] += size
                 summary.count_by_category[category] += 1
-                summary.count_by_top_level[_top_level_part(path, root)] += 1
+                summary.count_by_top_level[_top_level_part(path, extended_root)] += 1
 
                 if summary.scanned % PROGRESS_INTERVAL == 0:
                     print(f"...{summary.scanned} files scanned, in {path.parent}", file=sys.stderr)

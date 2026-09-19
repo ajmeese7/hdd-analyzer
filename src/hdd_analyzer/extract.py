@@ -16,9 +16,13 @@ from hdd_analyzer.config import (
     EXTRACT_READ_BYTES,
     EXTRACT_TIMEOUT_SECONDS,
 )
+from hdd_analyzer.paths import to_extended_path
 
 _EXTRACT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="extract")
 _LOGGER = logging.getLogger(__name__)
+
+# pypdf logs recoverable parse issues for corrupt PDFs at WARNING; old drives are full of them
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 _TEXT_CATEGORIES = {"text", "code"}
 _NUL_RATIO_THRESHOLD = 0.01
@@ -127,7 +131,8 @@ def extract_excerpt(path: Path, category: str, ext: str) -> tuple[str | None, bo
     if ext not in {"pdf", "docx", "xlsx", "doc"} and category not in _TEXT_CATEGORIES:
         return None, True
 
-    future = _EXTRACT_EXECUTOR.submit(_dispatch_extract, path, category, ext)
+    extended_path = Path(to_extended_path(str(path)))
+    future = _EXTRACT_EXECUTOR.submit(_dispatch_extract, extended_path, category, ext)
     try:
         return future.result(timeout=EXTRACT_TIMEOUT_SECONDS), False
     except concurrent.futures.TimeoutError:
