@@ -6,12 +6,23 @@ import hashlib
 import json
 import os
 import stat as stat_module
+import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
-from hdd_analyzer.config import DEDUPE_SAMPLE_BYTES, SIZE_FLOOR_BYTES, categorize, is_skip_dir, is_var_child_skip
+from hdd_analyzer.config import (
+    DEDUPE_SAMPLE_BYTES,
+    SIZE_FLOOR_BYTES,
+    categorize,
+    is_marker_skip,
+    is_skip_dir,
+    is_var_child_skip,
+    should_hash_content,
+)
+
+PROGRESS_INTERVAL = 5000
 
 
 def is_reparse_point(entry: os.DirEntry) -> bool:
@@ -63,6 +74,7 @@ class WalkSummary:
     duplicates: int = 0
     bytes_by_category: Counter[str] = field(default_factory=Counter)
     count_by_category: Counter[str] = field(default_factory=Counter)
+    count_by_top_level: Counter[str] = field(default_factory=Counter)
 
 
 def _dedupe_key(path: Path, size: int) -> str | None:
@@ -75,6 +87,26 @@ def _dedupe_key(path: Path, size: int) -> str | None:
         return None
     hasher.update(str(size).encode("ascii"))
     return hasher.hexdigest()
+
+
+def _metadata_dedupe_key(size: int, name: str) -> str:
+    """Cheap dedupe key for files we deliberately don't hash: size + name.
+
+    Two differently-named copies of the same non-text binary (e.g. a photo
+    renamed on export) will not collide here and will both be kept, which is
+    a false-negative dedup, not a false positive. That's the accepted
+    tradeoff for skipping the IO cost of hashing archives/media/binaries.
+    """
+    return f"meta:{size}:{name.lower()}"
+
+
+def _top_level_part(path: Path, root: Path) -> str:
+    """First path component of `path` relative to `root`, for breakdown stats."""
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return str(root)
+    return relative.parts[0] if relative.parts else str(root)
 
 
 def _iter_dirs_and_files(root: Path, error_log: list[str]) -> Iterator[tuple[Path, bool]]:
@@ -99,6 +131,8 @@ def _iter_dirs_and_files(root: Path, error_log: list[str]) -> Iterator[tuple[Pat
             error_log.append(f"scandir failed: {current} ({exc})")
             continue
 
+        siblings = frozenset(entry.name.lower() for entry in entries)
+
         for entry in entries:
             try:
                 if entry.is_symlink() or is_reparse_point(entry):
@@ -110,7 +144,11 @@ def _iter_dirs_and_files(root: Path, error_log: list[str]) -> Iterator[tuple[Pat
 
             entry_path = Path(entry.path)
             if is_dir:
-                if is_skip_dir(entry.name, parent_parts) or is_var_child_skip(entry.name, parent_parts):
+                if (
+                    is_skip_dir(entry.name, parent_parts)
+                    or is_var_child_skip(entry.name, parent_parts)
+                    or is_marker_skip(entry.name, siblings)
+                ):
                     continue
                 identity = dir_identity(entry_path)
                 if is_cycle(identity, visited):
@@ -162,11 +200,15 @@ def walk_many(roots: list[Path], run_dir: Path) -> WalkSummary:
 
                 ext = path.suffix.lstrip(".").lower()
                 category = categorize(ext)
-                key = _dedupe_key(path, size)
-                if key is None:
-                    error_log.append(f"read failed for dedupe hash: {path}")
-                    summary.skipped_errors += 1
-                    continue
+
+                if should_hash_content(category, size):
+                    key = _dedupe_key(path, size)
+                    if key is None:
+                        error_log.append(f"read failed for dedupe hash: {path}")
+                        summary.skipped_errors += 1
+                        continue
+                else:
+                    key = _metadata_dedupe_key(size, path.name)
 
                 dup_of = None
                 if key in seen_keys:
@@ -188,10 +230,18 @@ def walk_many(roots: list[Path], run_dir: Path) -> WalkSummary:
                 summary.scanned += 1
                 summary.bytes_by_category[category] += size
                 summary.count_by_category[category] += 1
+                summary.count_by_top_level[_top_level_part(path, root)] += 1
+
+                if summary.scanned % PROGRESS_INTERVAL == 0:
+                    print(f"...{summary.scanned} files scanned, in {path.parent}", file=sys.stderr)
 
     with open(errors_path, "w", encoding="utf-8") as err_out:
         err_out.write("\n".join(error_log))
         if error_log:
             err_out.write("\n")
+
+    print("files by top-level directory:", file=sys.stderr)
+    for name, count in summary.count_by_top_level.most_common():
+        print(f"  {name}: {count}", file=sys.stderr)
 
     return summary

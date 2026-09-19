@@ -16,11 +16,35 @@ Purpose: triage old hard drives for semantically valuable files using TypeSafe's
 
 ## Walk stage (deterministic, free)
 
-Per file record: path, size, mtime, ext, category, blake2b-128 of first 256 KiB + size (dedupe key). Streams JSONL; errors (permission, long path) are counted and logged to `runs/NAME/walk-errors.log`, never fatal. Skips symlinks/reparse points. Dedupe: first path wins, duplicates recorded with `dup_of`.
+Per file record: path, size, mtime, ext, category, dedupe key. Streams JSONL; errors (permission, long path) are counted and logged to `runs/NAME/walk-errors.log`, never fatal. Skips symlinks/reparse points. Dedupe: first path wins, duplicates recorded with `dup_of`.
 
-Skip dirs (case-insensitive, name match): Windows, Program Files, Program Files (x86), ProgramData, $Recycle.Bin, System Volume Information, $WinREAgent, Recovery, PerfLogs, Intel, XboxGames, AppData/Local/Temp-like caches, node_modules, .git, __pycache__, .venv, venv, .cache, plus Linux system dirs when walking a rootfs: proc, sys, dev, run, usr, lib, lib64, bin, sbin, boot, snap, var (except var/mail), lost+found, etc (keep etc: small and can hold hand-edited configs -> keep), cdrom, media, mnt, opt (keep opt? skip), srv (keep).
+Progress: every 5000 files scanned, prints a running count and the current directory to stderr. At the end of the walk, prints a per-top-level-directory file count breakdown to stderr, so rabbit holes (a dependency cache tree that slipped past the skip rules, an AppData subtree with far more files than expected) are visible without re-running.
+
+### Skip dirs
+
+Real-drive walks showed most inventoried files come from dependency/build cache directories rather than user content, so skip rules are split into three layers:
+
+**Unconditional (name match, case-insensitive, skipped everywhere):** Windows, Program Files, Program Files (x86), ProgramData, $Recycle.Bin, System Volume Information, $WinREAgent, Recovery, PerfLogs, Intel, XboxGames, node_modules, .git, __pycache__, .venv, venv, .cache, .nuget, .gradle, .m2, .cargo, .rustup, .npm, .pnpm-store, .yarn, site-packages, .tox, .mypy_cache, .pytest_cache, .ruff_cache, Cache/cache/Caches, CachedData, Code Cache, GPUCache, ShaderCache, .vs, .idea, .vscode-server, Temp/tmp, .Trash-1000, .thumbnails, plus Linux system dirs when walking a rootfs: proc, sys, dev, run, usr, lib, lib64, bin, sbin, boot, snap, var (except var/mail), lost+found, etc (keep: small, can hold hand-edited configs), cdrom, media, mnt, opt, srv (keep).
+
+**Marker-based (only skipped when a sibling entry in the same directory identifies the project type; the sibling set comes for free from the scandir listing already used to walk the parent):**
+- Library, Temp, Logs, obj -> skipped when a sibling ProjectSettings or Assets exists (Unity project)
+- target -> skipped when a sibling Cargo.toml or pom.xml exists (Rust/Maven)
+- bin, obj -> skipped when any sibling *.csproj or *.sln file exists (.NET)
+- build -> skipped when a sibling gradlew, CMakeLists.txt, or package.json exists
+- dist, .next, .nuxt, coverage -> skipped when a sibling package.json exists
+- vendor -> skipped when a sibling composer.json or go.mod exists (not unconditional: "vendor" is a common legitimate directory name otherwise)
+
+**AppData policy (Windows):** AppData\Local and AppData\LocalLow are skipped as whole subtrees (never descended into) since they're machine-local install/cache trees. AppData\Roaming is left walkable, since real user configs and credentials live there (FileZilla, Thunderbird, etc.); the unconditional cache-name skips above still apply inside Roaming.
 
 Categories by extension: text (txt, md, csv, log, json, xml, yaml, ini, cfg, conf, eml, htm(l)), code (py, js, ts, c, cpp, h, java, rs, go, sh, ps1, bat, sql, rb, php, pl), doc (docx, doc, rtf, odt, xlsx, pdf), image (jpg, png, heic, gif, raw, cr2, tiff), archive (zip, 7z, rar, tar, gz), av (mp3, mp4, mov, avi, mkv, wav), binary/other. Size floor 32 bytes, ceiling for extraction sampling only (no file too big to inventory).
+
+### Dedupe key: hash vs metadata
+
+Hashing the first 256 KiB of every file dominates IO cost on spinning disks, and most of that cost was being spent on categories where a duplicate hit is rare or low value (images, archives, media, unclassified binaries) or on oversized files where a partial hash's dedupe accuracy is not worth a big read.
+
+Content hashing (blake2b-128 of first 256 KiB + size) is applied only to files whose category is text, code, or doc (which covers pdf) AND whose size is at most 50 MB. Every other file, including oversized text/code/doc files, gets a metadata-only dedupe key of the form `meta:<size>:<lowercased filename>`, computed without opening the file.
+
+Tradeoff: two differently-named copies of the same non-text file (or of an oversized text/code/doc file) will not be recognized as duplicates under the metadata key, since the name differs. This is a false-negative dedup (both copies kept, neither wrongly discarded), never a false positive, and is the accepted cost of skipping a full-file read on the categories that rarely need it.
 
 ## Extraction (scan stage, local)
 
