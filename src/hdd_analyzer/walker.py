@@ -5,12 +5,43 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat as stat_module
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
 from hdd_analyzer.config import DEDUPE_SAMPLE_BYTES, SIZE_FLOOR_BYTES, categorize, is_skip_dir, is_var_child_skip
+
+
+def is_reparse_point(entry: os.DirEntry) -> bool:
+    """True if `entry` is a Windows reparse point (junction, symlink, OneDrive placeholder).
+
+    `st_file_attributes` only exists on Windows `os.stat_result`; on other
+    platforms this is always False and entry.is_symlink() covers cycles.
+    """
+    try:
+        entry_stat = entry.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    attributes = getattr(entry_stat, "st_file_attributes", None)
+    if attributes is None:
+        return False
+    return bool(attributes & stat_module.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def dir_identity(path: Path) -> tuple[int, int] | None:
+    """Return (st_dev, st_ino) for `path`, or None if it cannot be stat'd."""
+    try:
+        result = os.stat(path)
+    except OSError:
+        return None
+    return result.st_dev, result.st_ino
+
+
+def is_cycle(identity: tuple[int, int] | None, visited: set[tuple[int, int]]) -> bool:
+    """True if `identity` has already been visited (and is not None)."""
+    return identity is not None and identity in visited
 
 
 @dataclass(frozen=True)
@@ -47,7 +78,18 @@ def _dedupe_key(path: Path, size: int) -> str | None:
 
 
 def _iter_dirs_and_files(root: Path, error_log: list[str]) -> Iterator[tuple[Path, bool]]:
-    """Yield (path, is_dir) for every non-skipped entry under root, DFS."""
+    """Yield (path, is_dir) for every non-skipped entry under root, DFS.
+
+    Guards against directory cycles two ways: skipping any reparse point
+    (Windows junctions, symlinks, OneDrive placeholders) and tracking
+    (st_dev, st_ino) of every directory already descended into, which also
+    catches cycles introduced by non-Windows bind/UNC mounts.
+    """
+    visited: set[tuple[int, int]] = set()
+    root_identity = dir_identity(root)
+    if root_identity is not None:
+        visited.add(root_identity)
+
     stack: list[tuple[Path, tuple[str, ...]]] = [(root, ())]
     while stack:
         current, parent_parts = stack.pop()
@@ -59,7 +101,7 @@ def _iter_dirs_and_files(root: Path, error_log: list[str]) -> Iterator[tuple[Pat
 
         for entry in entries:
             try:
-                if entry.is_symlink():
+                if entry.is_symlink() or is_reparse_point(entry):
                     continue
                 is_dir = entry.is_dir(follow_symlinks=False)
             except OSError as exc:
@@ -70,6 +112,11 @@ def _iter_dirs_and_files(root: Path, error_log: list[str]) -> Iterator[tuple[Pat
             if is_dir:
                 if is_skip_dir(entry.name, parent_parts) or is_var_child_skip(entry.name, parent_parts):
                     continue
+                identity = dir_identity(entry_path)
+                if is_cycle(identity, visited):
+                    continue
+                if identity is not None:
+                    visited.add(identity)
                 yield entry_path, True
                 stack.append((entry_path, parent_parts + (entry.name.lower(),)))
             else:

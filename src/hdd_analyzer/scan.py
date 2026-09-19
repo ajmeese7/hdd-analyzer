@@ -10,12 +10,10 @@ from typing import Any
 
 from typesafe_sdk import AsyncTypeSafeClient
 
-from hdd_analyzer.budget import BudgetTracker, estimate_tokens, tokens_to_cost
+from hdd_analyzer.budget import BudgetTracker, estimate_tokens, estimate_worst_case_tokens, tokens_to_cost
 from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY
 from hdd_analyzer.extract import extract_excerpt
 from hdd_analyzer.jev import build_state, classify_file
-
-MIN_PROB_DEFAULT = 0.6
 
 
 @dataclass(frozen=True)
@@ -52,6 +50,8 @@ def load_resumed_keys(run_dir: Path) -> set[str]:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if record.get("error") is not None:
+                continue
             key = record.get("dedupe_key")
             if key:
                 keys.add(key)
@@ -84,9 +84,31 @@ def build_candidates(records: list[dict[str, Any]], resumed_keys: set[str]) -> l
     return candidates
 
 
+def _candidate_char_count(candidate: ScanCandidate) -> int:
+    return (len(candidate.excerpt) if candidate.excerpt else 0) + 200  # + fixed overhead for questions/schema
+
+
 def estimate_candidate_tokens(candidate: ScanCandidate) -> int:
-    char_count = len(candidate.excerpt) if candidate.excerpt else 0
-    return estimate_tokens(char_count + 200)  # + fixed overhead for questions/schema
+    return estimate_tokens(_candidate_char_count(candidate))
+
+
+def estimate_candidate_worst_case_tokens(candidate: ScanCandidate) -> int:
+    return estimate_worst_case_tokens(_candidate_char_count(candidate))
+
+
+def bill_result(tracker: BudgetTracker, result: dict[str, Any], fallback_chars: int) -> dict[str, Any]:
+    """Bill a completed classification result against `tracker`.
+
+    Error results are never billed (nothing was actually sent/received), and
+    are recorded with 0 input tokens. Successful results are billed on the
+    real `input_tokens` from the API response when present, falling back to
+    the char-based estimate only when a successful response lacks usage
+    data. Returns `result` with `input_tokens` normalized.
+    """
+    if result.get("error"):
+        return {**result, "input_tokens": 0}
+    tracker.record_tokens(result.get("input_tokens"), fallback_chars)
+    return result
 
 
 async def _classify_one(
@@ -124,6 +146,9 @@ async def _classify_one(
             value_confidence = answer.confidence
             probabilities[name] = answer.probabilities
 
+    usage = getattr(response, "usage", None)
+    input_tokens = usage.input_tokens if usage is not None else None
+
     return {
         "dedupe_key": candidate.dedupe_key,
         "path": candidate.path,
@@ -132,7 +157,7 @@ async def _classify_one(
         "probabilities": probabilities,
         "value_score": value_score,
         "value_confidence": value_confidence,
-        "input_tokens": response.usage.input_tokens,
+        "input_tokens": input_tokens,
         "error": None,
     }
 
@@ -192,7 +217,7 @@ async def run_scan(
             batch_start = 0
             while batch_start < len(candidates):
                 batch = candidates[batch_start : batch_start + concurrency]
-                worst_case = sum(tokens_to_cost(estimate_candidate_tokens(c)) for c in batch)
+                worst_case = sum(tokens_to_cost(estimate_candidate_worst_case_tokens(c)) for c in batch)
                 if tracker.would_exceed_cap(worst_case):
                     outcome.stopped_at_cap = True
                     break
@@ -200,7 +225,7 @@ async def run_scan(
                 results = await asyncio.gather(*(_classify_one(client, semaphore, c) for c in batch))
                 for result in results:
                     fallback_chars = len(next(c.excerpt or "" for c in batch if c.dedupe_key == result["dedupe_key"]))
-                    tracker.record_tokens(result.get("input_tokens"), fallback_chars)
+                    result = bill_result(tracker, result, fallback_chars)
                     out.write(json.dumps(result) + "\n")
                     out.flush()
                     outcome.processed += 1

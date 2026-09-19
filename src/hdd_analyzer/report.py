@@ -11,7 +11,7 @@ from hdd_analyzer.budget import tokens_to_cost
 
 NOUL_CATEGORIES = ("credentials", "personal", "financial_legal", "original_work", "irreplaceable")
 DEFAULT_TOP_N = 25
-CATEGORY_MIN_PROB = 0.6
+MIN_PROB_DEFAULT = 0.6
 
 
 def load_results(run_dir: Path) -> list[dict[str, Any]]:
@@ -69,8 +69,8 @@ def _overall_table(rows: list[dict[str, Any]], top_n: int) -> str:
     return "\n".join(lines)
 
 
-def _category_table(rows: list[dict[str, Any]], category: str, top_n: int = 20) -> str:
-    matches = [r for r in rows if float(r.get("probabilities", {}).get(category, 0) or 0) >= CATEGORY_MIN_PROB]
+def _category_table(rows: list[dict[str, Any]], category: str, min_prob: float, top_n: int = 20) -> str:
+    matches = [r for r in rows if float(r.get("probabilities", {}).get(category, 0) or 0) >= min_prob]
     matches.sort(key=lambda r: float(r["probabilities"][category]), reverse=True)
     matches = matches[:top_n]
     if not matches:
@@ -82,7 +82,9 @@ def _category_table(rows: list[dict[str, Any]], category: str, top_n: int = 20) 
     return "\n".join(lines)
 
 
-def render_report_md(results: list[dict[str, Any]], dedupe_savings: int, spend_usd: float, top_n: int) -> str:
+def render_report_md(
+    results: list[dict[str, Any]], dedupe_savings: int, spend_usd: float, top_n: int, min_prob: float
+) -> str:
     rows = _valid_rows(results)
     errors = sum(1 for r in results if r.get("error"))
 
@@ -100,9 +102,9 @@ def render_report_md(results: list[dict[str, Any]], dedupe_savings: int, spend_u
         "",
     ]
     for category in NOUL_CATEGORIES:
-        sections.append(f"## {category} (top 20, probability >= {CATEGORY_MIN_PROB})")
+        sections.append(f"## {category} (top 20, probability >= {min_prob})")
         sections.append("")
-        sections.append(_category_table(rows, category))
+        sections.append(_category_table(rows, category, min_prob))
         sections.append("")
     return "\n".join(sections)
 
@@ -130,14 +132,14 @@ def write_report_csv(results: list[dict[str, Any]], csv_path: Path) -> None:
             writer.writerow(flat)
 
 
-def generate_report(run_dir: Path, top_n: int = DEFAULT_TOP_N) -> tuple[Path, Path]:
+def generate_report(run_dir: Path, top_n: int = DEFAULT_TOP_N, min_prob: float = MIN_PROB_DEFAULT) -> tuple[Path, Path]:
     results = load_results(run_dir)
     dedupe_savings = load_dedupe_savings(run_dir)
     spend_usd = sum(_estimated_row_cost(r) for r in results)
 
     md_path = run_dir / "report.md"
     csv_path = run_dir / "report.csv"
-    md_path.write_text(render_report_md(results, dedupe_savings, spend_usd, top_n), encoding="utf-8")
+    md_path.write_text(render_report_md(results, dedupe_savings, spend_usd, top_n, min_prob), encoding="utf-8")
     write_report_csv(results, csv_path)
     return md_path, csv_path
 

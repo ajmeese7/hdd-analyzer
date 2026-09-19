@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import logging
 import re
 import zipfile
 from pathlib import Path
 
 import chardet
 
-from hdd_analyzer.config import EXCERPT_CHAR_CAP, EXTRACT_READ_BYTES
+from hdd_analyzer.config import (
+    ARCHIVE_MEMBER_SIZE_CAP_BYTES,
+    EXCERPT_CHAR_CAP,
+    EXTRACT_READ_BYTES,
+    EXTRACT_TIMEOUT_SECONDS,
+)
+
+_EXTRACT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="extract")
+_LOGGER = logging.getLogger(__name__)
 
 _TEXT_CATEGORIES = {"text", "code"}
 _NUL_RATIO_THRESHOLD = 0.01
@@ -65,10 +75,14 @@ def _extract_office_xml(path: Path, member_candidates: tuple[str, ...]) -> str |
     try:
         with zipfile.ZipFile(path) as archive:
             for member in member_candidates:
-                if member in archive.namelist():
-                    data = archive.read(member)[:EXTRACT_READ_BYTES]
-                    text = _strip_tags(data)
-                    return text[:EXCERPT_CHAR_CAP] if text.strip() else None
+                if member not in archive.namelist():
+                    continue
+                if archive.getinfo(member).file_size > ARCHIVE_MEMBER_SIZE_CAP_BYTES:
+                    continue
+                with archive.open(member) as handle:
+                    data = handle.read(EXTRACT_READ_BYTES)
+                text = _strip_tags(data)
+                return text[:EXCERPT_CHAR_CAP] if text.strip() else None
     except (OSError, zipfile.BadZipFile):
         return None
     return None
@@ -88,23 +102,34 @@ def _extract_legacy_doc(path: Path) -> str | None:
     return text[:EXCERPT_CHAR_CAP]
 
 
-def extract_excerpt(path: Path, category: str, ext: str) -> tuple[str | None, bool]:
-    """Return (excerpt, metadata_only). excerpt is None if unavailable."""
-    ext = ext.lower()
-
+def _dispatch_extract(path: Path, category: str, ext: str) -> str | None:
     if category in _TEXT_CATEGORIES:
-        return _extract_text_or_code(path), False
-
+        return _extract_text_or_code(path)
     if ext == "pdf":
-        return _extract_pdf(path), False
-
+        return _extract_pdf(path)
     if ext == "docx":
-        return _extract_office_xml(path, ("word/document.xml",)), False
-
+        return _extract_office_xml(path, ("word/document.xml",))
     if ext == "xlsx":
-        return _extract_office_xml(path, ("xl/sharedStrings.xml",)), False
-
+        return _extract_office_xml(path, ("xl/sharedStrings.xml",))
     if ext == "doc":
-        return _extract_legacy_doc(path), False
+        return _extract_legacy_doc(path)
+    return None
 
-    return None, True
+
+def extract_excerpt(path: Path, category: str, ext: str) -> tuple[str | None, bool]:
+    """Return (excerpt, metadata_only). excerpt is None if unavailable.
+
+    Extraction runs on a shared thread pool with a hard per-file timeout, so
+    a pathological PDF/doc cannot hang the whole scan. A timeout falls back
+    to metadata-only rather than crashing the run.
+    """
+    ext = ext.lower()
+    if ext not in {"pdf", "docx", "xlsx", "doc"} and category not in _TEXT_CATEGORIES:
+        return None, True
+
+    future = _EXTRACT_EXECUTOR.submit(_dispatch_extract, path, category, ext)
+    try:
+        return future.result(timeout=EXTRACT_TIMEOUT_SECONDS), False
+    except concurrent.futures.TimeoutError:
+        _LOGGER.warning("extraction timed out after %ss, falling back to metadata-only: %s", EXTRACT_TIMEOUT_SECONDS, path)
+        return None, True

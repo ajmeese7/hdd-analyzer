@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import sys
 from pathlib import Path
@@ -15,8 +14,7 @@ from hdd_analyzer import report as report_mod
 from hdd_analyzer import scan as scan_mod
 from hdd_analyzer import walker
 from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY
-from hdd_analyzer.report import DEFAULT_TOP_N
-from hdd_analyzer.scan import MIN_PROB_DEFAULT
+from hdd_analyzer.report import DEFAULT_TOP_N, MIN_PROB_DEFAULT
 
 RUNS_DIR = Path("runs")
 
@@ -62,7 +60,6 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     print(f"hard cap: ${args.cap:.2f}")
 
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "meta.json").write_text(json.dumps({"min_prob": args.min_prob}), encoding="utf-8")
 
     if args.dry_run:
         print("dry run: extraction only, zero API calls")
@@ -101,7 +98,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
 def _cmd_report(args: argparse.Namespace) -> int:
     run_dir = _run_dir(args.run)
-    md_path, csv_path = report_mod.generate_report(run_dir, top_n=args.top)
+    md_path, csv_path = report_mod.generate_report(run_dir, top_n=args.top, min_prob=args.min_prob)
     print(f"wrote {md_path}")
     print(f"wrote {csv_path}")
     return 0
@@ -125,7 +122,6 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--run", required=True, help="Run name.")
     scan_parser.add_argument("--cap", type=float, default=DEFAULT_CAP_USD, help="Hard spend cap in USD.")
     scan_parser.add_argument("--limit", type=int, default=None, help="Limit number of files scanned.")
-    scan_parser.add_argument("--min-prob", type=float, default=MIN_PROB_DEFAULT, help="Report probability threshold.")
     scan_parser.add_argument("--yes", action="store_true", help="Skip interactive confirmation.")
     scan_parser.add_argument("--dry-run", action="store_true", help="Extraction only; zero API calls.")
     scan_parser.set_defaults(func=_cmd_scan)
@@ -133,6 +129,9 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser = subparsers.add_parser("report", help="Render report.md and report.csv from scan results.")
     report_parser.add_argument("--run", required=True, help="Run name.")
     report_parser.add_argument("--top", type=int, default=DEFAULT_TOP_N, help="Overall top-N table size.")
+    report_parser.add_argument(
+        "--min-prob", type=float, default=MIN_PROB_DEFAULT, help="Per-category probability threshold."
+    )
     report_parser.set_defaults(func=_cmd_report)
 
     return parser

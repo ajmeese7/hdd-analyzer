@@ -7,11 +7,26 @@ from dataclasses import dataclass
 from hdd_analyzer.config import PRICE_PER_MTOK
 
 CHARS_PER_TOKEN = 4
+WORST_CASE_MULTIPLIER = 2.0
 
 
-def estimate_tokens(char_count: int) -> int:
-    """Estimate token count from character count (fallback heuristic)."""
-    return max(1, char_count // CHARS_PER_TOKEN)
+def estimate_tokens(char_count: int, worst_case: bool = False) -> int:
+    """Estimate token count from character count (fallback heuristic).
+
+    `worst_case=True` scales the average estimate by WORST_CASE_MULTIPLIER,
+    for use in pre-dispatch cap checks where actual spend must not exceed
+    the cap. The unbiased average estimate (the default) is used everywhere
+    else, including the `estimate` CLI command.
+    """
+    tokens = max(1, char_count // CHARS_PER_TOKEN)
+    if worst_case:
+        tokens = max(1, int(tokens * WORST_CASE_MULTIPLIER))
+    return tokens
+
+
+def estimate_worst_case_tokens(char_count: int) -> int:
+    """Worst-case token estimate for pre-dispatch cap checks."""
+    return estimate_tokens(char_count, worst_case=True)
 
 
 def tokens_to_cost(tokens: int) -> float:

@@ -1,4 +1,10 @@
-from hdd_analyzer.budget import BudgetTracker, estimate_tokens, tokens_to_cost
+from hdd_analyzer.budget import (
+    WORST_CASE_MULTIPLIER,
+    BudgetTracker,
+    estimate_tokens,
+    estimate_worst_case_tokens,
+    tokens_to_cost,
+)
 
 
 def test_estimate_tokens_uses_chars_per_four():
@@ -39,3 +45,17 @@ def test_would_exceed_cap_false_when_within_budget():
 def test_remaining_usd_never_negative():
     tracker = BudgetTracker(cap_usd=1.0, spent_usd=5.0)
     assert tracker.remaining_usd() == 0.0
+
+
+def test_worst_case_tokens_scales_average_estimate():
+    average = estimate_tokens(400)
+    worst_case = estimate_worst_case_tokens(400)
+    assert worst_case == int(average * WORST_CASE_MULTIPLIER)
+
+
+def test_estimate_tokens_default_is_average_not_worst_case():
+    assert estimate_tokens(400) != estimate_worst_case_tokens(400)
+
+
+def test_worst_case_tokens_minimum_is_at_least_one():
+    assert estimate_worst_case_tokens(0) >= 1

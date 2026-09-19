@@ -9,6 +9,8 @@ EXCERPT_CHAR_CAP = 6000
 EXTRACT_READ_BYTES = 16 * 1024
 DEDUPE_SAMPLE_BYTES = 256 * 1024
 SIZE_FLOOR_BYTES = 32
+EXTRACT_TIMEOUT_SECONDS = 20
+ARCHIVE_MEMBER_SIZE_CAP_BYTES = 64 * 1024 * 1024
 
 # Directory names skipped regardless of platform (case-insensitive match on
 # the final path component).
