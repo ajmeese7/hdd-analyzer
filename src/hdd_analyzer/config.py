@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 PRICE_PER_MTOK = 0.042
+# Measured from live billing: a metadata-only call bills ~830 tokens, so the
+# question definitions and schema dominate the per-call cost.
+PER_CALL_OVERHEAD_TOKENS = 850
 DEFAULT_CAP_USD = 5.0
 DEFAULT_CONCURRENCY = 8
 EXCERPT_CHAR_CAP = 6000

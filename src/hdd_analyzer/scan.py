@@ -11,7 +11,7 @@ from typing import Any
 from typesafe_sdk import AsyncTypeSafeClient
 
 from hdd_analyzer.budget import BudgetTracker, estimate_tokens, estimate_worst_case_tokens, tokens_to_cost
-from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY
+from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY, PER_CALL_OVERHEAD_TOKENS
 from hdd_analyzer.extract import extract_excerpt
 from hdd_analyzer.jev import build_state, classify_file
 from hdd_analyzer.jev_provider import resolve_async_provider
@@ -86,15 +86,15 @@ def build_candidates(records: list[dict[str, Any]], resumed_keys: set[str]) -> l
 
 
 def _candidate_char_count(candidate: ScanCandidate) -> int:
-    return (len(candidate.excerpt) if candidate.excerpt else 0) + 200  # + fixed overhead for questions/schema
+    return len(candidate.excerpt) if candidate.excerpt else 0
 
 
 def estimate_candidate_tokens(candidate: ScanCandidate) -> int:
-    return estimate_tokens(_candidate_char_count(candidate))
+    return PER_CALL_OVERHEAD_TOKENS + estimate_tokens(_candidate_char_count(candidate))
 
 
 def estimate_candidate_worst_case_tokens(candidate: ScanCandidate) -> int:
-    return estimate_worst_case_tokens(_candidate_char_count(candidate))
+    return PER_CALL_OVERHEAD_TOKENS + estimate_worst_case_tokens(_candidate_char_count(candidate))
 
 
 def bill_result(tracker: BudgetTracker, result: dict[str, Any], fallback_chars: int) -> dict[str, Any]:
