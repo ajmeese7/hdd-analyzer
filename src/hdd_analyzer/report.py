@@ -18,8 +18,14 @@ def load_results(run_dir: Path) -> list[dict[str, Any]]:
     results_path = run_dir / "results.jsonl"
     if not results_path.exists():
         raise FileNotFoundError(f"no results found at {results_path}; run `scan` first")
+    latest: dict[str, dict[str, Any]] = {}
     with open(results_path, encoding="utf-8") as handle:
-        return [json.loads(line) for line in handle if line.strip()]
+        for line in handle:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            latest[record["dedupe_key"]] = record
+    return list(latest.values())
 
 
 def load_dedupe_savings(run_dir: Path) -> int:
