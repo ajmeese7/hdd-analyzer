@@ -14,6 +14,7 @@ from hdd_analyzer.budget import BudgetTracker, estimate_tokens, estimate_worst_c
 from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY
 from hdd_analyzer.extract import extract_excerpt
 from hdd_analyzer.jev import build_state, classify_file
+from hdd_analyzer.jev_provider import resolve_async_provider
 
 
 @dataclass(frozen=True)
@@ -212,7 +213,10 @@ async def run_scan(
     results_path = run_dir / "results.jsonl"
     semaphore = asyncio.Semaphore(concurrency)
 
-    async with AsyncTypeSafeClient(api_key=api_key, model="jev-latest") as client:
+    provider = resolve_async_provider(api_key)
+    print(f"jev provider: {provider.name} (model={provider.model})")
+
+    async with AsyncTypeSafeClient(api_key=api_key, model=provider.model, **provider.client_kwargs) as client:
         with open(results_path, "a", encoding="utf-8") as out:
             batch_start = 0
             while batch_start < len(candidates):

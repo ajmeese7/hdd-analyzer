@@ -84,6 +84,25 @@ Result row: dedupe key, path, all probabilities, value score + confidence, usage
 - `SystemOneResponse.answers: dict[str, Answer]`, `.usage.input_tokens: int|None`
 - Errors: TypeSafeAPIError (has .status via subclass), TypeSafeRateLimitError, TypeSafeAuthenticationError.
 
+## Provider resolution (native TypeSafe or OpenRouter)
+
+`TYPESAFE_API_KEY` may hold either a native TypeSafe key or an OpenRouter key
+(prefix `sk-or-`). `hdd_analyzer.jev_provider.resolve_provider` picks the
+provider: OpenRouter if the key starts with `sk-or-`, native TypeSafe
+otherwise, with `JEV_PROVIDER=openrouter|typesafe` overriding the sniff.
+
+OpenRouter serves Jev at its Decisions API, `POST
+https://openrouter.ai/api/alpha/decisions`, model id `typesafe/jev-1.13`,
+using the same wire protocol and Bearer auth as native TypeSafe. Since the
+SDK always builds its request URL as `base_url + "/v1/systemone"`, OpenRouter
+support is a path-rewriting httpx2 transport wrapped around the SDK's own
+HTTP transport: `OpenRouterTransport` (sync) and `AsyncOpenRouterTransport`
+(async) both rewrite `/v1/systemone` to `/api/alpha/decisions` via
+`request.url.copy_with(path=...)` and delegate to `httpx2.HTTPTransport` /
+`httpx2.AsyncHTTPTransport`. `scan` uses `AsyncTypeSafeClient`, so it wires
+`AsyncOpenRouterTransport` via `resolve_async_provider`. `scan` prints the
+resolved provider and model at startup.
+
 ## Layout
 
 hdd_analyzer/{__init__.py, cli.py (argparse), config.py, walker.py, extract.py, jev.py, scan.py, report.py}

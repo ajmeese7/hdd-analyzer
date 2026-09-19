@@ -26,6 +26,11 @@ Copy `.env.example` to `.env` and fill in `TYPESAFE_API_KEY`:
 copy .env.example .env
 ```
 
+`TYPESAFE_API_KEY` accepts either a native TypeSafe key or an OpenRouter key
+(prefix `sk-or-`). OpenRouter keys are routed to OpenRouter's Decisions API
+automatically. Set `JEV_PROVIDER=openrouter` or `JEV_PROVIDER=typesafe` in
+`.env` to override the auto-detection.
+
 Dependencies are managed with `uv`. Install with:
 
 ```
