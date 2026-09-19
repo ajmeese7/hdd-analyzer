@@ -1,0 +1,28 @@
+[project]
+name = "hdd-analyzer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Aaron Meese", email = "aaron@meese.dev" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "chardet>=7.6.0",
+    "httpx>=0.28.1",
+    "pypdf>=6.19.0",
+    "python-dotenv>=1.2.3",
+    "typesafe-sdk>=0.7.0",
+]
+
+[project.scripts]
+hdd-analyzer = "hdd_analyzer:main"
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
