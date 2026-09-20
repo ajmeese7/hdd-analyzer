@@ -94,12 +94,40 @@ def _tesseract_creationflags() -> int:
     return subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
+def needs_ascii_staging(path_str: str) -> bool:
+    """True if the tesseract CLI cannot be trusted to open this path as given.
+
+    Tesseract mangles non-ASCII characters in command-line paths on Windows
+    (macOS screenshots carry a narrow no-break space before AM/PM), so such
+    files are copied to an ASCII-named temp file first.
+    """
+    return not path_str.isascii()
+
+
 def _invoke_tesseract(tesseract_cmd: str, path: Path, timeout: int) -> tuple[str | None, str]:
     """Run tesseract on one image file, returning (text, ocr_status)."""
-    extended_path = to_extended_path(str(path))
+    source = to_extended_path(str(path))
+    staged: str | None = None
+    if needs_ascii_staging(source):
+        fd, staged = tempfile.mkstemp(suffix=path.suffix.lower() or ".img")
+        os.close(fd)
+        try:
+            shutil.copyfile(source, staged)
+        except OSError as exc:
+            _LOGGER.warning("could not stage %s for OCR: %s", path, exc)
+            os.unlink(staged)
+            return None, OCR_STATUS_ERROR
+    try:
+        return _run_tesseract(tesseract_cmd, staged or source, path, timeout)
+    finally:
+        if staged:
+            os.unlink(staged)
+
+
+def _run_tesseract(tesseract_cmd: str, image_arg: str, original: Path, timeout: int) -> tuple[str | None, str]:
     try:
         completed = subprocess.run(
-            [tesseract_cmd, extended_path, "stdout", "-l", "eng", "--psm", "3"],
+            [tesseract_cmd, image_arg, "stdout", "-l", "eng", "--psm", "3"],
             capture_output=True,
             timeout=timeout,
             creationflags=_tesseract_creationflags(),
@@ -107,7 +135,7 @@ def _invoke_tesseract(tesseract_cmd: str, path: Path, timeout: int) -> tuple[str
     except subprocess.TimeoutExpired:
         return None, OCR_STATUS_TIMEOUT
     except OSError as exc:
-        _LOGGER.warning("tesseract invocation failed for %s: %s", path, exc)
+        _LOGGER.warning("tesseract invocation failed for %s: %s", original, exc)
         return None, OCR_STATUS_ERROR
 
     if completed.returncode != 0:
