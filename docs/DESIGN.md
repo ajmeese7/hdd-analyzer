@@ -72,6 +72,7 @@ Result row: dedupe key, path, all probabilities, value score + confidence, usage
 - Hard cap enforced BEFORE each request batch using actual spend so far + worst-case estimate of in-flight batch; abort cleanly, results already on disk remain.
 - Concurrency 8 via AsyncTypeSafeClient; tenacity-style retry is built into SDK RetryPolicy (429/5xx).
 - Drives are opened read-only by convention: tool never writes outside the repo `runs/` dir.
+- Systemic error circuit breaker: HTTP 401/403/402 (auth, permission, billing) are treated as run-fatal, not per-file. A preflight canary call runs before any candidate is dispatched; if it fails systemically, the scan aborts immediately with zero files touched. During the batch loop, 5 consecutive systemic errors abort the scan (any success resets the count). Systemic error rows are never written to results.jsonl; per-file errors (validation, timeouts, transient 5xx) are still written and retried on the next `scan` invocation. `ScanOutcome.aborted_reason` carries the message and the CLI exits non-zero when set.
 
 ## SDK surface (verified against typesafe-sdk 0.7.0 installed in .venv)
 

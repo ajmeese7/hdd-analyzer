@@ -93,6 +93,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     print(f"processed: {outcome.processed}, errors: {outcome.errors}, spent: ${outcome.spent_usd:.4f}")
     if outcome.stopped_at_cap:
         print("stopped: hard cap reached; re-run scan to resume")
+    if outcome.aborted_reason:
+        return 1
     return 0
 
 
