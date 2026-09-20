@@ -7,6 +7,7 @@ long paths reached through the WSL UNC redirector (\\\\wsl.localhost\\...).
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import PurePath, PurePosixPath, PureWindowsPath
@@ -34,7 +35,9 @@ def to_extended_path(path_str: str) -> str:
     Returns `path_str` unchanged on non-Windows platforms, and unchanged if
     it is already in extended form. Forward slashes are normalized to
     backslashes before conversion, since callers may accept `F:/` style
-    input.
+    input. Relative paths are made absolute first: Windows does not resolve
+    relative paths under the `\\?\` prefix, so `\\?\docs` silently
+    lists nothing.
     """
     if sys.platform != "win32":
         return path_str
@@ -43,6 +46,8 @@ def to_extended_path(path_str: str) -> str:
 
     if normalized.startswith(_DRIVE_PREFIX):
         return normalized
+
+    normalized = os.path.abspath(normalized)
 
     if normalized.startswith("\\\\"):
         return _UNC_PREFIX + normalized.lstrip("\\")

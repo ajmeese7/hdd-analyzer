@@ -26,6 +26,12 @@ def test_to_extended_path_is_idempotent():
 
 
 @windows_only
+def test_to_extended_path_makes_relative_paths_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert to_extended_path("docs") == "\\\\?\\" + str(tmp_path / "docs")
+
+
+@windows_only
 def test_to_extended_path_normalizes_forward_slashes():
     assert to_extended_path("F:/foo/bar") == "\\\\?\\F:\\foo\\bar"
 
