@@ -52,6 +52,10 @@ def test_verified_label_unknown_for_legacy_rows_missing_the_field():
     assert verified_label({}) == "unknown"
 
 
+def test_verified_label_ocr_for_ocr_extraction_status():
+    assert verified_label({"extraction_status": "ocr"}) == "ocr"
+
+
 def test_split_by_verified_separates_content_from_everything_else():
     rows = [
         {"path": "a.txt", "extraction_status": "ok"},

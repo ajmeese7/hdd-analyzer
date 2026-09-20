@@ -11,10 +11,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from hdd_analyzer import annotate as annotate_mod
+from hdd_analyzer import ocr as ocr_mod
 from hdd_analyzer import report as report_mod
 from hdd_analyzer import scan as scan_mod
 from hdd_analyzer import walker
 from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY
+from hdd_analyzer.ocr import OCR_DEFAULT_MIN_VALUE, OCR_DEFAULT_TOP_N
 from hdd_analyzer.report import DEFAULT_TOP_N, MIN_PROB_DEFAULT
 
 RUNS_DIR = Path("runs")
@@ -51,10 +53,26 @@ def _cmd_estimate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_exclude_ext(value: str | None) -> set[str] | None:
+    if not value:
+        return None
+    return {ext.strip().lstrip(".").lower() for ext in value.split(",") if ext.strip()}
+
+
 def _cmd_scan(args: argparse.Namespace) -> int:
     run_dir = _run_dir(args.run)
     only_keys = scan_mod.load_name_only_keys(run_dir) if args.only_name_only else None
-    estimate = scan_mod.estimate_run(run_dir, limit=args.limit, only_keys=only_keys)
+    exclude_exts = _parse_exclude_ext(args.exclude_ext)
+
+    excerpt_override = None
+    if args.from_ocr:
+        excerpt_override = ocr_mod.load_ocr_excerpts(run_dir)
+        ocr_keys = set(excerpt_override.keys())
+        only_keys = ocr_keys if only_keys is None else only_keys & ocr_keys
+
+    estimate = scan_mod.estimate_run(
+        run_dir, limit=args.limit, only_keys=only_keys, exclude_exts=exclude_exts, excerpt_override=excerpt_override
+    )
 
     print(f"candidate files: {estimate.candidate_count}")
     print(f"estimated tokens: {estimate.estimated_tokens:,}")
@@ -90,6 +108,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             limit=args.limit,
             concurrency=DEFAULT_CONCURRENCY,
             only_keys=only_keys,
+            exclude_exts=exclude_exts,
+            excerpt_override=excerpt_override,
         )
     )
 
@@ -115,6 +135,38 @@ def _cmd_annotate(args: argparse.Namespace) -> int:
         print("  re-classify with: scan --run <name> --only-name-only")
         for path in outcome.rescan_candidates:
             print(f"  {path}")
+    return 0
+
+
+def _cmd_ocr(args: argparse.Namespace) -> int:
+    run_dir = _run_dir(args.run)
+
+    try:
+        ocr_mod.resolve_tesseract()
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        results = report_mod.load_results(run_dir)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    candidates = ocr_mod.select_ocr_candidates(
+        results, top_n=args.top, take_all=args.all, min_value=args.min_value, limit=args.limit
+    )
+    print(f"ocr candidates: {len(candidates)}")
+    if not candidates:
+        print("nothing to OCR")
+        return 0
+
+    outcome = ocr_mod.run_ocr(run_dir, candidates)
+    print(
+        f"ocr done: ok={outcome.ok} no_text={outcome.no_text} timeout={outcome.timeout} "
+        f"error={outcome.error} unsupported={outcome.unsupported} elapsed={outcome.elapsed_seconds:.1f}s"
+    )
+    print(f"wrote {run_dir / 'ocr.jsonl'}")
     return 0
 
 
@@ -149,7 +201,18 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument(
         "--only-name-only",
         action="store_true",
-        help="Restrict candidates to dedupe keys whose existing result has extraction_status != ok.",
+        help="Restrict candidates to name-only-judged rows that today's extraction would actually retry.",
+    )
+    scan_parser.add_argument(
+        "--exclude-ext",
+        default=None,
+        help="Comma-separated extensions to exclude from candidates (e.g. jpg,png), applied on top of selection.",
+    )
+    scan_parser.add_argument(
+        "--from-ocr",
+        action="store_true",
+        help="Restrict candidates to dedupe keys with an ok OCR excerpt in runs/NAME/ocr.jsonl, "
+        "and classify using that excerpt instead of running extraction (see `ocr` subcommand).",
     )
     scan_parser.set_defaults(func=_cmd_scan)
 
@@ -163,6 +226,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-prob", type=float, default=MIN_PROB_DEFAULT, help="Per-category probability threshold used to select surfaced rows."
     )
     annotate_parser.set_defaults(func=_cmd_annotate)
+
+    ocr_parser = subparsers.add_parser(
+        "ocr", help="OCR name-only image/no-text-PDF rows with Tesseract. Local, free, no API calls."
+    )
+    ocr_parser.add_argument("--run", required=True, help="Run name.")
+    ocr_parser.add_argument(
+        "--top", type=int, default=OCR_DEFAULT_TOP_N, help="Top N eligible rows by value_score to OCR."
+    )
+    ocr_parser.add_argument("--all", action="store_true", help="OCR every eligible row, ignoring --top/--min-value.")
+    ocr_parser.add_argument(
+        "--min-value", type=float, default=OCR_DEFAULT_MIN_VALUE, help="Minimum value_score to be OCR'd."
+    )
+    ocr_parser.add_argument("--limit", type=int, default=None, help="Cap the total number of files OCR'd.")
+    ocr_parser.set_defaults(func=_cmd_ocr)
 
     report_parser = subparsers.add_parser("report", help="Render report.md and report.csv from scan results.")
     report_parser.add_argument("--run", required=True, help="Run name.")

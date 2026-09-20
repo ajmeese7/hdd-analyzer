@@ -68,13 +68,18 @@ def _valid_rows(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def verified_label(row: dict[str, Any]) -> str:
     """"content" if extraction actually read the file, "name-only" if Jev only saw the name.
 
-    "unknown" covers legacy result rows written before extraction_status was
-    tracked, so an old run's report does not silently claim verification it
-    never performed.
+    "ocr" covers rows classified from a `scan --from-ocr` excerpt (see
+    scan.EXTRACTION_STATUS_OCR), so a Tesseract-recovered read is told apart
+    from both a direct content read and a bare filename guess. "unknown"
+    covers legacy result rows written before extraction_status was tracked,
+    so an old run's report does not silently claim verification it never
+    performed.
     """
     status = row.get("extraction_status")
     if status is None:
         return "unknown"
+    if status == "ocr":
+        return "ocr"
     return "content" if status == "ok" else "name-only"
 
 

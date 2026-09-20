@@ -11,7 +11,8 @@ Purpose: triage old hard drives for semantically valuable files using TypeSafe's
 
 - `walk ROOT --run NAME [--include SUBPATH ...]` -> writes `runs/NAME/inventory.jsonl` + prints summary (counts/bytes by category, skipped counts). No network, no API.
 - `estimate --run NAME` -> token + dollar estimate for a scan of the inventory. No network.
-- `scan --run NAME [--cap USD] [--limit N] [--yes] [--dry-run] [--only-name-only]` -> extraction + Jev calls, appends `runs/NAME/results.jsonl` incrementally (resumable: skips file hashes already present). Prints running spend. Hard-stops at cap (default $5). Prompts with the estimate before spending unless `--yes`. `--dry-run` does extraction only, zero API calls. `--only-name-only` restricts candidates to dedupe keys whose existing result has `extraction_status != "ok"`, for a cheap targeted re-scan after an extraction/categorization fix (bypasses the normal resume skip for those specific keys; everything else keeps normal resume semantics).
+- `scan --run NAME [--cap USD] [--limit N] [--yes] [--dry-run] [--only-name-only] [--exclude-ext EXT[,EXT...]] [--from-ocr]` -> extraction + Jev calls, appends `runs/NAME/results.jsonl` incrementally (resumable: skips file hashes already present). Prints running spend. Hard-stops at cap (default $5). Prompts with the estimate before spending unless `--yes`. `--dry-run` does extraction only, zero API calls. `--only-name-only` restricts candidates to rows that were judged from filename alone (`was_name_only`) AND that today's extraction would actually attempt (`extract._extraction_eligible` against today's `categorize(ext)`, no file IO at selection time), for a cheap targeted re-scan after an extraction/categorization fix; this bypasses the normal resume skip for those specific keys, everything else keeps normal resume semantics. `--exclude-ext` drops specific extensions from candidates on top of whatever selection is in effect. `--from-ocr` restricts candidates to dedupe keys with an `ok` row in `runs/NAME/ocr.jsonl` (see the `ocr` stage below) and classifies each using its OCR excerpt instead of running extraction, recording `extraction_status: "ocr"`. The filtered count is what prints as "candidate files" before the confirmation prompt.
+- `ocr --run NAME [--top N] [--all] [--min-value V] [--limit N]` -> local, free, zero-API-call OCR pass over an existing run's `results.jsonl`. Selects name-only image rows and name-only PDF rows whose extraction found no text, runs Tesseract on a thread pool, and writes `runs/NAME/ocr.jsonl`. See the OCR stage section below.
 - `report --run NAME [--top N] [--min-prob P]` -> `runs/NAME/report.md` + `report.csv`, ranked per category and overall.
 - `annotate --run NAME [--all] [--top N] [--min-prob P]` -> backfills `metadata_only`/`extraction_status` on `results.jsonl` rows that predate the fields entirely (zero API calls). Never overwrites a row that already has a stored scan-time status, since the report's "verified" column must reflect what Jev actually saw, not what extraction can do today; instead it lists such rows separately as re-scan candidates when today's extraction would now succeed. By default only report-surfaced rows are checked; `--all` covers every row.
 
@@ -37,7 +38,13 @@ Real-drive walks showed most inventoried files come from dependency/build cache 
 
 **AppData policy (Windows):** AppData\Local and AppData\LocalLow are skipped as whole subtrees (never descended into) since they're machine-local install/cache trees. AppData\Roaming is left walkable, since real user configs and credentials live there (FileZilla, Thunderbird, etc.); the unconditional cache-name skips above still apply inside Roaming.
 
-Categories by extension: text (txt, md, csv, log, json, xml, yaml, ini, cfg, conf, eml, htm(l), plus credential/config formats: pem, key, crt, cer, csr, pub, env, toml, properties, tfvars, netrc, npmrc, pgpass, rtf), code (py, js, ts, c, cpp, h, java, rs, go, sh, ps1, bat, sql, rb, php, pl), doc (docx, doc, odt, xlsx, pdf), image (jpg, png, heic, gif, raw, cr2, tiff), archive (zip, 7z, rar, tar, gz), av (mp3, mp4, mov, avi, mkv, wav), binary/other. Size floor 32 bytes, ceiling for extraction sampling only (no file too big to inventory).
+Categories by extension: text (txt, md, csv, log, json, xml, yaml, ini, cfg, conf, eml, htm(l), svg, plus credential/config formats: pem, key, crt, cer, csr, pub, env, toml, properties, tfvars, netrc, npmrc, pgpass, rtf, plus mail/structured formats: emlx, emlxpart, mbox, ics, vcf, plist, wifi), code (py, js, ts, c, cpp, h, java, rs, go, sh, ps1, bat, sql, rb, php, pl, cs, pyi, pyx, css, scss, less, vue, svelte, kt, swift, m, mm, dart, lua, r, jl, ex, exs, erl, hs, scala, groovy, gradle, cmake, mk, dockerfile, tf, hcl, nix, zsh, fish, psm1, psd1, vbs, ahk), doc (docx, doc, odt, xlsx, pdf), image (jpg, png, heic, gif, raw, cr2, tiff, webp, avif, bmp, ico), archive (zip, 7z, rar, tar, gz), av (mp3, mp4, mov, avi, mkv, wav), generated (meta, asset, mat, prefab, unity, anim, controller, cubemap, physicmaterial), binary/other. Size floor 32 bytes, ceiling for extraction sampling only (no file too big to inventory).
+
+`generated` covers engine/tool-generated metadata with no independent value
+(Unity `.meta` sidecars and similar project artifacts): inventoried and
+counted like any other category, but excluded from candidate building the
+same way a duplicate is (never extracted, never content-hashed since it's
+outside `_HASH_ELIGIBLE_CATEGORIES`, never sent to Jev).
 
 The credential/config extensions were previously unmapped and fell into the
 "binary" default, so extraction never even tried them; headline hits like
@@ -60,7 +67,9 @@ Tradeoff: two differently-named copies of the same non-text file (or of an overs
 - text/code: read first 16 KiB, decode via chardet, strip NUL-heavy content (binary masquerading).
 - pdf: pypdf, first 3 pages of extractable text.
 - docx/xlsx: read as zip, pull word/document.xml / shared strings, tag-strip, first 16 KiB. Plain .doc: latin-1 strings-style salvage of printable runs. rtf: strip RTF control words and braces directly (regex), since RTF's escaping is regular enough not to need the legacy-doc printable-run heuristic.
+- eml/emlx: parsed with `email.parser` (policy=`email.policy.default`); excerpt is From/To/Date/Subject headers plus the first text/plain part, or html tag-stripped if no plain-text part exists. `.emlx` (Apple Mail) files are a byte-count line, then that many bytes of RFC822 message, then a trailing plist; only the count line and the message bytes are read, the plist is never included.
 - image/av/archive: no content; judged on metadata only (path, name, size, mtime), marked `metadata_only`.
+- generated (Unity `.meta` and similar): no content, excluded from candidates entirely before extraction is even considered (see Walk stage).
 - binary (no recognized extension): a content-sniffing fallback (see below) catches plain-text files hiding behind an unknown or missing extension before giving up on them.
 - Excerpt hard cap ~6000 chars (~1500 tokens) per file.
 
@@ -102,6 +111,62 @@ When `metadata_only` is true, the state sent to Jev also sets
 `content_readable: false` and replaces `excerpt` with an explicit note
 telling Jev the name is weak evidence, rather than silently sending
 `excerpt: null` and leaving Jev to infer that on its own.
+
+## OCR stage (separate command, local, free)
+
+`scan` never runs OCR itself; images and no-text PDFs are extraction-`unsupported`/`no_text`
+and get judged by Jev on filename alone. `ocr` (`hdd_analyzer/ocr.py`) is a
+standalone, zero-API-call command that revisits an existing run's
+`results.jsonl` and gives the highest-ranked of those name-only guesses a
+chance to be confirmed or refuted by actual content, without re-spending on
+a fresh Jev pass for files that were never going to be readable anyway.
+
+Selection (`select_ocr_candidates`): a row is eligible when `was_name_only`
+is true AND either its category is `image`, or its extension is `pdf` and
+its stored `extraction_status` is `no_text` (a scanned document with no text
+layer of its own; other non-`ok` PDF statuses, like `unsupported` or
+`error`, are not retried here since OCR would not help). By default the
+top `--top` (200) eligible rows by `value_score`, restricted to
+`value_score >= --min-value` (2.0), are OCR'd; `--all` OCRs every eligible
+row regardless of score or rank; `--limit` caps the total either way.
+
+Tesseract resolution (`resolve_tesseract`): `TESSERACT_CMD` env var (`.env`,
+unquoted or single-quoted -- python-dotenv unescapes `\t` inside
+double-quoted values, which silently turns `\tesseract.exe` into a tab),
+else `tesseract` on PATH, else the winget default install path
+(`C:\Program Files\Tesseract-OCR\tesseract.exe`) if it exists, else a
+`RuntimeError` pointing at `docs/RUNBOOK.md`'s OCR setup section.
+
+Images (`OCR_IMAGE_EXTS`: jpg, jpeg, png, tif, tiff, bmp, webp, gif) are
+OCR'd directly via `tesseract <file> stdout -l eng --psm 3` over stdin/stdout,
+using the extended-length path helper from `paths.py` and, on Windows,
+`CREATE_NO_WINDOW` so no console flashes per file. HEIC is a valid `image`
+category extension but has no Tesseract decoder, so it is reported
+`unsupported` without an attempt. PDFs are rasterized with `pypdfium2` at
+~150dpi, first 3 pages (`OCR_PDF_MAX_PAGES`), each page OCR'd the same way
+via a temporary PNG cleaned up in a `finally` block; a corrupt or encrypted
+PDF that pypdfium2 cannot even open, or cannot rasterize a single page from,
+comes back `no_text` rather than raising.
+
+Runs on a 4-worker thread pool (subprocess/IO bound), printing progress
+every 25 files to stderr. Every attempt appends one row to
+`runs/NAME/ocr.jsonl`: `{dedupe_key, path, ocr_status, excerpt_chars,
+excerpt}`, `ocr_status` one of `ok`, `no_text`, `timeout`, `error`,
+`unsupported`. The excerpt is capped at the same `EXCERPT_CHAR_CAP` used by
+`extract.py`. **`ocr.jsonl` holds real file content excerpts (potentially
+credentials or other PII pulled straight off a scanned ID or document) and
+must never be reported or printed verbatim; it lives under `runs/`, which is
+gitignored, same as everything else in a run.**
+
+`scan --from-ocr` re-classifies rows OCR recovered content for: it restricts
+candidates to dedupe keys with an `ok` row in `ocr.jsonl` (`only_keys`,
+reusing the same resume-bypass mechanism as `--only-name-only`) and, via an
+`excerpt_override` mapping threaded through `build_candidates` and the
+extraction pipeline, uses the OCR excerpt directly instead of calling
+`extract_excerpt`/`extract_excerpt_async`. Candidates built this way get
+`metadata_only: false` and `extraction_status: "ocr"`, a state distinct from
+both `ok` (direct extraction) and name-only, and `verified_label` renders it
+as `ocr` in the report rather than folding it into `content` or `name-only`.
 
 ## Jev questions (one system_one call per file, 6 parallel questions)
 
@@ -168,19 +233,20 @@ resolved provider and model at startup.
 ## Report format
 
 Every table (overall top-N and each category's top-20) carries a `verified`
-column: `content` when `extraction_status == "ok"`, `name-only` otherwise,
-`unknown` for legacy rows written before extraction_status existed. Within
-each table, content-verified rows are listed first, preserving their rank
-among the full ranked set; a clearly separated "Name-only matches
-(unverified)" subsection follows with the remaining rows, rather than
-interleaving a name-only guess between two content-verified hits. Sibling
-collapsing then applies within each subsection: once a parent directory
-contributes more than 3 rows to a table, the highest-ranked row is kept and
-the rest collapse into one `... and N more in <dir>` line, so a directory of
-50 game saves cannot flood a table.
+column: `content` when `extraction_status == "ok"`, `ocr` when
+`extraction_status == "ocr"` (see the OCR stage), `name-only` for every other
+status, `unknown` for legacy rows written before extraction_status existed.
+Within each table, content-verified rows are listed first, preserving their
+rank among the full ranked set; a clearly separated "Name-only matches
+(unverified)" subsection follows with the remaining rows (including `ocr`
+rows), rather than interleaving a name-only guess between two
+content-verified hits. Sibling collapsing then applies within each
+subsection: once a parent directory contributes more than 3 rows to a table,
+the highest-ranked row is kept and the rest collapse into one `... and N
+more in <dir>` line, so a directory of 50 game saves cannot flood a table.
 
 ## Layout
 
-hdd_analyzer/{__init__.py, cli.py (argparse), config.py, walker.py, extract.py, jev.py, jev_provider.py, scan.py, report.py, annotate.py, paths.py}
-tests/ for pure logic only (skip rules, categorization, excerpt sanitization, budget accounting). No mocks, no network in tests.
+hdd_analyzer/{__init__.py, cli.py (argparse), config.py, walker.py, extract.py, jev.py, jev_provider.py, scan.py, ocr.py, report.py, annotate.py, paths.py}
+tests/ for pure logic only (skip rules, categorization, excerpt sanitization, budget accounting, OCR selection/resolution). No mocks, no network, no tesseract invocation in tests.
 Console script: `hdd-analyzer = hdd_analyzer.cli:main` in pyproject.

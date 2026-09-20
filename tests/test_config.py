@@ -41,6 +41,30 @@ def test_categorize_rtf_is_text_not_doc():
     assert categorize("rtf") == "text"
 
 
+def test_categorize_mail_and_structured_text_extensions_are_text():
+    for ext in ("emlx", "emlxpart", "mbox", "ics", "vcf", "plist", "wifi", "log"):
+        assert categorize(ext) == "text", ext
+
+
+def test_categorize_svg_stays_text():
+    assert categorize("svg") == "text"
+
+
+def test_categorize_additional_code_extensions():
+    for ext in (
+        "cs", "pyi", "pyx", "css", "scss", "less", "vue", "svelte", "kt", "swift",
+        "m", "mm", "dart", "lua", "r", "jl", "ex", "exs", "erl", "hs", "scala",
+        "groovy", "gradle", "cmake", "mk", "dockerfile", "tf", "hcl", "nix",
+        "zsh", "fish", "psm1", "psd1", "vbs", "ahk",
+    ):
+        assert categorize(ext) == "code", ext
+
+
+def test_categorize_generated_extensions():
+    for ext in ("meta", "asset", "mat", "prefab", "unity", "anim", "controller", "cubemap", "physicmaterial"):
+        assert categorize(ext) == "generated", ext
+
+
 def test_skip_dir_matches_common_system_dirs():
     assert is_skip_dir("Windows", ())
     assert is_skip_dir("node_modules", ())

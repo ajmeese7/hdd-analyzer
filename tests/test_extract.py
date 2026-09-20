@@ -196,3 +196,82 @@ def test_sniff_accepts_extensionless_text_key(tmp_path):
     assert status == "ok"
     assert metadata_only is False
     assert "PRIVATE KEY" in excerpt
+
+
+def _build_emlx(message_bytes: bytes, plist: bytes) -> bytes:
+    return f"{len(message_bytes)}\n".encode("ascii") + message_bytes + plist
+
+
+def test_extract_emlx_parses_headers_and_plain_text_body_excluding_plist(tmp_path):
+    message = (
+        b"From: alice@example.com\r\n"
+        b"To: bob@example.com\r\n"
+        b"Date: Mon, 1 Jan 2024 00:00:00 -0000\r\n"
+        b"Subject: Hello\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"This is the body text.\r\n"
+    )
+    plist = b"<plist><dict><key>flags</key><integer>0</integer></dict></plist>"
+    emlx_path = tmp_path / "123.emlx"
+    emlx_path.write_bytes(_build_emlx(message, plist))
+
+    excerpt, metadata_only, status = extract_excerpt(emlx_path, category="text", ext="emlx", size=emlx_path.stat().st_size)
+
+    assert status == "ok"
+    assert metadata_only is False
+    assert "From: alice@example.com" in excerpt
+    assert "Subject: Hello" in excerpt
+    assert "This is the body text." in excerpt
+    assert "<plist>" not in excerpt
+    assert "flags" not in excerpt
+
+
+def test_extract_emlx_missing_length_line_is_no_text(tmp_path):
+    emlx_path = tmp_path / "bad.emlx"
+    emlx_path.write_bytes(b"not a number here at all with no newline")
+
+    excerpt, metadata_only, status = extract_excerpt(emlx_path, category="text", ext="emlx", size=emlx_path.stat().st_size)
+
+    assert excerpt is None
+    assert metadata_only is True
+    assert status == "no_text"
+
+
+def test_extract_eml_parses_headers_and_body(tmp_path):
+    message = (
+        b"From: alice@example.com\r\n"
+        b"To: bob@example.com\r\n"
+        b"Subject: Plain eml\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"Body of the eml.\r\n"
+    )
+    eml_path = tmp_path / "note.eml"
+    eml_path.write_bytes(message)
+
+    excerpt, metadata_only, status = extract_excerpt(eml_path, category="text", ext="eml", size=eml_path.stat().st_size)
+
+    assert status == "ok"
+    assert metadata_only is False
+    assert "Subject: Plain eml" in excerpt
+    assert "Body of the eml." in excerpt
+
+
+def test_extract_eml_falls_back_to_html_body_when_no_plain_text(tmp_path):
+    message = (
+        b"From: alice@example.com\r\n"
+        b"Subject: Html only\r\n"
+        b"Content-Type: text/html\r\n"
+        b"\r\n"
+        b"<html><body><p>Hello <b>world</b></p></body></html>\r\n"
+    )
+    eml_path = tmp_path / "html.eml"
+    eml_path.write_bytes(message)
+
+    excerpt, metadata_only, status = extract_excerpt(eml_path, category="text", ext="eml", size=eml_path.stat().st_size)
+
+    assert status == "ok"
+    assert "Hello" in excerpt
+    assert "world" in excerpt
+    assert "<p>" not in excerpt

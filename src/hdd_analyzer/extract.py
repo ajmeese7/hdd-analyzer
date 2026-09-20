@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import email
+import email.policy
 import logging
 import re
 import zipfile
@@ -134,6 +136,89 @@ def _extract_office_xml(path: Path, member_candidates: tuple[str, ...]) -> tuple
     return None, EXTRACTION_STATUS_NO_TEXT
 
 
+_EMAIL_HEADERS = ("From", "To", "Date", "Subject")
+
+
+def _email_body_text(message: email.message.Message) -> str:
+    """First text/plain part if present, else the first text/html part with tags stripped."""
+    if message.is_multipart():
+        parts = list(message.walk())
+    else:
+        parts = [message]
+
+    for part in parts:
+        if part.get_content_type() == "text/plain":
+            try:
+                return str(part.get_content())
+            except Exception:
+                continue
+
+    for part in parts:
+        if part.get_content_type() == "text/html":
+            try:
+                html = str(part.get_content())
+            except Exception:
+                continue
+            return _strip_tags(html.encode("utf-8", errors="replace"))
+
+    return ""
+
+
+def _parse_email_message(message_bytes: bytes) -> tuple[str | None, str]:
+    """Build an excerpt from headers (From/To/Date/Subject) plus the plain-text body."""
+    try:
+        message = email.message_from_bytes(message_bytes, policy=email.policy.default)
+    except Exception:
+        return None, EXTRACTION_STATUS_ERROR
+
+    header_lines = [f"{name}: {message[name]}" for name in _EMAIL_HEADERS if message[name]]
+    body = _email_body_text(message)
+
+    text = "\n".join(header_lines)
+    if body:
+        text = f"{text}\n\n{body}" if text else body
+    text = text.strip()
+    if not text:
+        return None, EXTRACTION_STATUS_NO_TEXT
+    return text[:EXCERPT_CHAR_CAP], EXTRACTION_STATUS_OK
+
+
+def _extract_eml(path: Path) -> tuple[str | None, str]:
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(EXTRACT_READ_BYTES)
+    except OSError:
+        return None, EXTRACTION_STATUS_ERROR
+    return _parse_email_message(raw)
+
+
+def _extract_emlx(path: Path) -> tuple[str | None, str]:
+    """Apple Mail .emlx: a byte-count line, then that many bytes of RFC822 message, then a plist.
+
+    Only the byte-count line and the RFC822 message are used; the trailing
+    plist (message flags/metadata, not content) is never read or included.
+    """
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(EXTRACT_READ_BYTES + 64)
+    except OSError:
+        return None, EXTRACTION_STATUS_ERROR
+
+    newline_index = raw.find(b"\n")
+    if newline_index == -1:
+        return None, EXTRACTION_STATUS_NO_TEXT
+    try:
+        message_length = int(raw[:newline_index].strip())
+    except ValueError:
+        return None, EXTRACTION_STATUS_NO_TEXT
+
+    message_start = newline_index + 1
+    message_bytes = raw[message_start : message_start + message_length]
+    if not message_bytes:
+        return None, EXTRACTION_STATUS_NO_TEXT
+    return _parse_email_message(message_bytes)
+
+
 def _extract_rtf(path: Path) -> tuple[str | None, str]:
     """Salvage plain text from RTF by stripping its markup (control words and braces).
 
@@ -216,6 +301,10 @@ def _extract_legacy_doc(path: Path) -> tuple[str | None, str]:
 
 
 def _dispatch_extract(path: Path, category: str, ext: str, sniff: bool) -> tuple[str | None, str]:
+    if ext == "emlx":
+        return _extract_emlx(path)
+    if ext == "eml":
+        return _extract_eml(path)
     if ext == "rtf":
         return _extract_rtf(path)
     if category in _TEXT_CATEGORIES:

@@ -30,6 +30,17 @@ and produces a ranked report so a human can decide what's worth keeping.
    Useful after an extraction bug fix, to correct old results without
    re-spending on the LLM call. Defaults to only the rows currently surfaced
    by the report tables; `--all` covers every row.
+6. `ocr` - local, free, zero-API-call OCR pass over an existing run. Selects
+   name-only image rows and name-only PDF rows whose extraction found no
+   text (`extraction_status: "no_text"`), runs Tesseract on each, and writes
+   `runs/NAME/ocr.jsonl`. By default OCRs the top 200 eligible rows by
+   `value_score` with `value_score >= 2.0` (the high-ranked filename guesses
+   worth verifying); `--all` OCRs every eligible row, `--limit` caps the
+   total either way. `runs/NAME/ocr.jsonl` holds real file content excerpts
+   (potentially credentials or other PII) and is gitignored along with the
+   rest of `runs/`; never print it verbatim. `scan --from-ocr` re-classifies
+   the rows OCR recovered content for, using the OCR excerpt in place of
+   extraction (`extraction_status: "ocr"` in the results and report).
 
 ## Setup
 
@@ -49,6 +60,12 @@ Dependencies are managed with `uv`. Install with:
 ```
 uv sync
 ```
+
+`ocr` needs the Tesseract binary installed separately (it is not a Python
+dependency); see docs/RUNBOOK.md's "OCR setup" section. If it is not on
+PATH, set `TESSERACT_CMD` in `.env` to the full path, unquoted or
+single-quoted (a double-quoted value is unescaped by python-dotenv, which
+turns the `\t` in `\tesseract.exe` into a literal tab).
 
 ## Usage
 
@@ -74,6 +91,16 @@ uv run hdd-analyzer walk \\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE4p2 --run l
 uv run hdd-analyzer estimate --run linuxbox
 uv run hdd-analyzer scan --run linuxbox --cap 5
 uv run hdd-analyzer report --run linuxbox
+```
+
+### OCR a run's name-only images and no-text PDFs
+
+No API spend; only needs Tesseract installed (see Setup above).
+
+```
+uv run hdd-analyzer ocr --run winbox
+uv run hdd-analyzer scan --run winbox --from-ocr --cap 0.25
+uv run hdd-analyzer report --run winbox
 ```
 
 ## Safety

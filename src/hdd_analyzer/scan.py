@@ -12,14 +12,18 @@ from typing import Any
 from typesafe_sdk import AsyncTypeSafeClient
 
 from hdd_analyzer.budget import BudgetTracker, estimate_tokens, estimate_worst_case_tokens, tokens_to_cost
-from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY, PER_CALL_OVERHEAD_TOKENS
-from hdd_analyzer.extract import extract_excerpt, extract_excerpt_async
+from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY, PER_CALL_OVERHEAD_TOKENS, categorize
+from hdd_analyzer.extract import _extraction_eligible, extract_excerpt, extract_excerpt_async
 from hdd_analyzer.jev import RUBRIC_VERSION, build_state, classify_file
 from hdd_analyzer.jev_provider import resolve_async_provider
 
 SYSTEMIC_STATUS_CODES = frozenset({401, 402, 403})
 CONSECUTIVE_SYSTEMIC_LIMIT = 5
 CANARY_STATE = {"path": "canary.txt", "excerpt": "hello"}
+
+# extraction_status for a candidate whose excerpt came from `scan --from-ocr`
+# (see excerpt_override below) rather than from extract.py.
+EXTRACTION_STATUS_OCR = "ocr"
 
 
 def is_systemic_error(exc: BaseException) -> bool:
@@ -108,11 +112,15 @@ def load_resumed_keys(run_dir: Path) -> set[str]:
 
 
 def load_name_only_keys(run_dir: Path) -> set[str]:
-    """Dedupe keys of existing result rows judged from filename alone (extraction_status != "ok").
+    """Dedupe keys worth a targeted `scan --only-name-only` re-classification.
 
-    Used by `scan --only-name-only` to restrict a re-scan to the small set of
-    rows a categorization/extraction fix might change, rather than
-    re-classifying files whose content was already verified.
+    A key qualifies only if both hold: the stored result was judged from
+    filename alone (`was_name_only`), and today's extraction would actually
+    be attempted for it (`extract._extraction_eligible`, using today's
+    `categorize(ext)` since the categorizer may have changed since the
+    original scan). This is a pure selection decision based on inventory
+    metadata only, no file IO; a row that's still name-only after actual
+    extraction just gets rewritten with its unchanged status, same as today.
     """
     results_path = run_dir / "results.jsonl"
     if not results_path.exists():
@@ -130,7 +138,21 @@ def load_name_only_keys(run_dir: Path) -> set[str]:
             key = record.get("dedupe_key")
             if key:
                 latest[key] = record
-    return {key for key, record in latest.items() if was_name_only(record)}
+    name_only_keys = {key for key, record in latest.items() if was_name_only(record)}
+    if not name_only_keys:
+        return name_only_keys
+
+    inventory_by_key = {r["dedupe_key"]: r for r in load_inventory(run_dir)}
+    return {key for key in name_only_keys if _extraction_eligible_today(inventory_by_key.get(key))}
+
+
+def _extraction_eligible_today(inventory_record: dict[str, Any] | None) -> bool:
+    if inventory_record is None:
+        return False
+    ext = inventory_record["ext"]
+    category_today = categorize(ext)
+    eligible, _sniff = _extraction_eligible(category_today, ext, inventory_record["size"])
+    return eligible
 
 
 # Categories the original (rubric v1) scan attempted content extraction for.
@@ -149,21 +171,33 @@ def was_name_only(record: dict[str, Any]) -> bool:
     return record.get("category") not in _LEGACY_EXTRACTED_CATEGORIES
 
 
+# Engine/tool-generated metadata (Unity .meta sidecars, project artifacts):
+# no independent value, never worth a Jev call. Excluded from candidates the
+# same way a duplicate is, regardless of dup_of.
+_EXCLUDED_CATEGORIES = frozenset({"generated"})
+
+
 def eligible_records(
     records: list[dict[str, Any]],
     resumed_keys: set[str],
     limit: int | None = None,
     only_keys: set[str] | None = None,
+    exclude_exts: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Filter inventory records to non-duplicate, unresolved candidates, honoring `limit`.
 
     `only_keys`, when given, further restricts candidates to that set of
     dedupe keys (used by `scan --only-name-only` for a cheap targeted
-    re-scan of previously name-only-judged rows).
+    re-scan of previously name-only-judged rows). `exclude_exts`, when
+    given, drops any record whose extension is in the set (`--exclude-ext`).
     """
     eligible: list[dict[str, Any]] = []
     for record in records:
         if record.get("dup_of") is not None:
+            continue
+        if record.get("category") in _EXCLUDED_CATEGORIES:
+            continue
+        if exclude_exts is not None and record["ext"].lower() in exclude_exts:
             continue
         key = record["dedupe_key"]
         if only_keys is not None:
@@ -199,15 +233,24 @@ def build_candidates(
     resumed_keys: set[str],
     limit: int | None = None,
     only_keys: set[str] | None = None,
+    exclude_exts: set[str] | None = None,
+    excerpt_override: dict[str, str] | None = None,
 ) -> list[ScanCandidate]:
     """Filter to non-duplicate, unresolved records and run local extraction, sequentially.
 
     Used by `estimate_run`, where a simple sequential pass is fine since no
     API calls are in flight to overlap with. `run_scan` uses the pipelined
     producer/consumer path instead so extraction IO overlaps API latency.
+    `excerpt_override` (see `scan --from-ocr`) short-circuits extraction
+    entirely for any dedupe key present in it, using the given text as the
+    excerpt with `extraction_status` "ocr" instead.
     """
     candidates: list[ScanCandidate] = []
-    for record in eligible_records(records, resumed_keys, limit, only_keys):
+    for record in eligible_records(records, resumed_keys, limit, only_keys, exclude_exts):
+        override = excerpt_override.get(record["dedupe_key"]) if excerpt_override else None
+        if override is not None:
+            candidates.append(_candidate_from_record(record, override, False, EXTRACTION_STATUS_OCR))
+            continue
         path = Path(record["path"])
         excerpt, metadata_only, extraction_status = extract_excerpt(path, record["category"], record["ext"], record["size"])
         candidates.append(_candidate_from_record(record, excerpt, metadata_only, extraction_status))
@@ -308,11 +351,17 @@ class Estimate:
     estimated_cost_usd: float
 
 
-def estimate_run(run_dir: Path, limit: int | None = None, only_keys: set[str] | None = None) -> Estimate:
+def estimate_run(
+    run_dir: Path,
+    limit: int | None = None,
+    only_keys: set[str] | None = None,
+    exclude_exts: set[str] | None = None,
+    excerpt_override: dict[str, str] | None = None,
+) -> Estimate:
     """Extraction-only, zero-network estimate of a scan's token/dollar cost."""
     records = load_inventory(run_dir)
     resumed_keys = load_resumed_keys(run_dir)
-    candidates = build_candidates(records, resumed_keys, limit, only_keys)
+    candidates = build_candidates(records, resumed_keys, limit, only_keys, exclude_exts, excerpt_override)
 
     total_tokens = sum(estimate_candidate_tokens(c) for c in candidates)
     return Estimate(
@@ -331,13 +380,19 @@ class ScanOutcome:
     aborted_reason: str | None = None
 
 
-async def _extract_worker(input_queue: asyncio.Queue, out_queue: asyncio.Queue) -> None:
+async def _extract_worker(
+    input_queue: asyncio.Queue, out_queue: asyncio.Queue, excerpt_override: dict[str, str] | None = None
+) -> None:
     """Pull records off `input_queue`, extract, push finished candidates to `out_queue`."""
     while True:
         try:
             record = input_queue.get_nowait()
         except asyncio.QueueEmpty:
             return
+        override = excerpt_override.get(record["dedupe_key"]) if excerpt_override else None
+        if override is not None:
+            await out_queue.put(_candidate_from_record(record, override, False, EXTRACTION_STATUS_OCR))
+            continue
         path = Path(record["path"])
         excerpt, metadata_only, extraction_status = await extract_excerpt_async(
             path, record["category"], record["ext"], record["size"]
@@ -345,18 +400,24 @@ async def _extract_worker(input_queue: asyncio.Queue, out_queue: asyncio.Queue) 
         await out_queue.put(_candidate_from_record(record, excerpt, metadata_only, extraction_status))
 
 
-async def _run_extraction_pipeline(records: list[dict[str, Any]], out_queue: asyncio.Queue, concurrency: int) -> None:
+async def _run_extraction_pipeline(
+    records: list[dict[str, Any]],
+    out_queue: asyncio.Queue,
+    concurrency: int,
+    excerpt_override: dict[str, str] | None = None,
+) -> None:
     """Extract every record concurrently, then signal completion with a sentinel.
 
     Runs as its own task alongside the classification consumer, so IO for
     the next batch overlaps API latency for the current one instead of
-    running entirely upfront.
+    running entirely upfront. `excerpt_override` is forwarded to each worker
+    (see `scan --from-ocr`).
     """
     input_queue: asyncio.Queue = asyncio.Queue()
     for record in records:
         input_queue.put_nowait(record)
 
-    workers = [asyncio.create_task(_extract_worker(input_queue, out_queue)) for _ in range(concurrency)]
+    workers = [asyncio.create_task(_extract_worker(input_queue, out_queue, excerpt_override)) for _ in range(concurrency)]
     await asyncio.gather(*workers)
     await out_queue.put(None)
 
@@ -395,6 +456,8 @@ async def run_scan(
     limit: int | None = None,
     concurrency: int = DEFAULT_CONCURRENCY,
     only_keys: set[str] | None = None,
+    exclude_exts: set[str] | None = None,
+    excerpt_override: dict[str, str] | None = None,
 ) -> ScanOutcome:
     """Dispatch classification calls for unresolved candidates, batch by batch.
 
@@ -403,10 +466,13 @@ async def run_scan(
     consumer loop below classifies whatever batch is ready, so file IO for
     the next batch overlaps API latency for the current one. `only_keys`
     restricts candidates to a specific dedupe-key set (see `--only-name-only`).
+    `exclude_exts` drops extensions on top of that (see `--exclude-ext`).
+    `excerpt_override` short-circuits extraction for the given dedupe keys
+    (see `--from-ocr`).
     """
     records = load_inventory(run_dir)
     resumed_keys = load_resumed_keys(run_dir)
-    to_extract = eligible_records(records, resumed_keys, limit, only_keys)
+    to_extract = eligible_records(records, resumed_keys, limit, only_keys, exclude_exts)
 
     tracker = BudgetTracker(cap_usd=cap_usd)
     outcome = ScanOutcome()
@@ -418,7 +484,7 @@ async def run_scan(
     print(f"jev provider: {provider.name} (model={provider.model})")
 
     tracker_state = SystemicErrorTracker()
-    extraction_task = asyncio.create_task(_run_extraction_pipeline(to_extract, out_queue, concurrency))
+    extraction_task = asyncio.create_task(_run_extraction_pipeline(to_extract, out_queue, concurrency, excerpt_override))
 
     async with AsyncTypeSafeClient(api_key=api_key, model=provider.model, **provider.client_kwargs) as client:
         canary_exc = await _run_canary(client, tracker)

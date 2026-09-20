@@ -180,23 +180,38 @@ def _register(category: str, extensions: tuple[str, ...]) -> None:
 _register(
     "text",
     (
-        "txt", "md", "csv", "log", "json", "xml", "yaml", "yml", "ini", "cfg", "conf", "eml", "htm", "html",
+        "txt", "md", "csv", "log", "json", "xml", "yaml", "yml", "ini", "cfg", "conf", "eml", "htm", "html", "svg",
         # Credential and config file types that were previously miscategorized as
         # "binary" (default fallback), which meant extraction never even tried
         # them and headline credential hits got judged by filename alone. They
         # are plain text.
         "pem", "key", "crt", "cer", "csr", "pub", "env", "toml", "properties",
         "tfvars", "netrc", "npmrc", "pgpass", "rtf",
+        # Mail and misc structured-text formats.
+        "emlx", "emlxpart", "mbox", "ics", "vcf", "plist", "wifi",
     ),
 )
 _register(
     "code",
-    ("py", "js", "ts", "c", "cpp", "h", "java", "rs", "go", "sh", "ps1", "bat", "sql", "rb", "php", "pl"),
+    (
+        "py", "js", "ts", "c", "cpp", "h", "java", "rs", "go", "sh", "ps1", "bat", "sql", "rb", "php", "pl",
+        "cs", "pyi", "pyx", "css", "scss", "less", "vue", "svelte", "kt", "swift", "m", "mm", "dart", "lua",
+        "r", "jl", "ex", "exs", "erl", "hs", "scala", "groovy", "gradle", "cmake", "mk", "dockerfile", "tf",
+        "hcl", "nix", "zsh", "fish", "psm1", "psd1", "vbs", "ahk",
+    ),
 )
 _register("doc", ("docx", "doc", "odt", "xlsx", "pdf"))
 _register("image", ("jpg", "jpeg", "png", "heic", "gif", "raw", "cr2", "tiff", "tif", "webp", "avif", "bmp", "ico"))
 _register("archive", ("zip", "7z", "rar", "tar", "gz"))
 _register("av", ("mp3", "mp4", "mov", "avi", "mkv", "wav"))
+# Engine/tool-generated metadata with no independent value: it either
+# describes another asset (Unity .meta sidecars) or is itself a rebuildable
+# project artifact. Inventoried and counted like anything else, but never
+# extracted, never content-hashed, and never sent to Jev.
+_register(
+    "generated",
+    ("meta", "asset", "mat", "prefab", "unity", "anim", "controller", "cubemap", "physicmaterial"),
+)
 
 
 def categorize(extension: str) -> str:

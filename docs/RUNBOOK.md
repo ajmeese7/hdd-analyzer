@@ -46,6 +46,12 @@ winget install UB-Mannheim.TesseractOCR
 tesseract --version
 ```
 
-If winget puts it somewhere not on PATH, the default install location is `C:\Program Files\Tesseract-OCR\tesseract.exe`; set `TESSERACT_CMD` in `.env` to that path.
+If winget puts it somewhere not on PATH, the default install location is `C:\Program Files\Tesseract-OCR\tesseract.exe`; set `TESSERACT_CMD` in `.env` to that path, unquoted or single-quoted (a double-quoted value is unescaped by python-dotenv, which turns the `\t` in `\tesseract.exe` into a literal tab and breaks the path).
 
-OCR runs during `scan` for image files and for PDFs whose text extraction came back empty. It is slow (roughly 1 to 3 seconds per image), so the scan only OCRs files Jev ranked highly by name in a prior pass, or everything with `--ocr all`.
+OCR is its own command, separate from `scan`, so a bad run never costs API spend: `ocr --run NAME` reads an existing run's `results.jsonl` and OCRs name-only image rows plus name-only PDF rows whose text extraction came back empty. It is slow (roughly 1 to 3 seconds per image), so by default it only OCRs the top 200 rows Jev ranked highly by name (`value_score >= 2.0`); `--all` OCRs every eligible row. Re-classify what OCR recovered with `scan --run NAME --from-ocr`, which uses the OCR excerpt instead of re-running extraction.
+
+```
+uv run hdd-analyzer ocr --run f-users
+uv run hdd-analyzer scan --run f-users --from-ocr --cap 0.25
+uv run hdd-analyzer report --run f-users
+```
