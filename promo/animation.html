@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hdd-analyzer</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #05070f; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="720"></canvas>
+<script>
+'use strict';
+// Deterministic 10s looping animation. window.seek(ms) renders a single frame
+// for headless frame capture; otherwise it free-runs on requestAnimationFrame.
+
+const W = 1280, H = 720, LOOP = 10000;
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+// ---------- palette ----------
+const BG = '#05070f';
+const CYAN = '#22d3ee';
+const VIOLET = '#a78bfa';
+const GREEN = '#34d399';
+const AMBER = '#fbbf24';
+const RED = '#f87171';
+const DIM = '#334155';
+const TEXT = '#cbd5e1';
+
+// ---------- seeded rng ----------
+function mulberry32(a) {
+  return function() {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+const easeIn = t => t * t * t;
+const easeInOut = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+// ---------- file schedule (precomputed, deterministic) ----------
+const NAMES = [
+  ['tax_returns_2009.pdf',  94, true],
+  ['DSC_0417.jpg',          12, false],
+  ['thesis_final_FINAL.docx', 91, true],
+  ['setup.exe',              3, false],
+  ['family_recipes.txt',    88, true],
+  ['Thumbs.db',              1, false],
+  ['mortgage_docs.pdf',     92, true],
+  ['node_modules.zip',       2, false],
+  ['grandpa_letters.doc',   96, true],
+  ['cache_0031.tmp',         1, false],
+  ['passwords_old.xlsx',    89, true],
+  ['vacation_2011.mp4',     41, false],
+  ['birth_certificate.pdf', 97, true],
+  ['desktop.ini',            0, false],
+];
+// spawn cadence keeps at most one chip inside the scanner at a time
+const FILES = NAMES.map(([name, score, keep], i) => {
+  const rng = mulberry32(i * 7919 + 17);
+  return {
+    name, score, keep,
+    t0: 900 + i * 540,           // spawn time
+    travel: 1000,                // platter -> scanner
+    scan: 420,                   // inside scanner
+    exit: 800,                   // scanner -> report / drop
+    jitter: rng() * 26 - 13,
+    slot: -1,
+  };
+});
+// assign report slots in the order keepers clear the scanner
+let slotN = 0;
+for (const f of FILES) if (f.keep) f.slot = slotN++;
+
+// key layout anchors
+const PLATTER = { x: 205, y: 400, r: 150 };
+const SCANNER = { x: 610, y: 400, r: 74 };
+const REPORT = { x: 890, y: 210, w: 330, h: 330 };
+const GAUGE = { x: 890, y: 570, w: 330, h: 84 };
+
+// ---------- helpers ----------
+function glowText(txt, x, y, size, color, blur, font) {
+  ctx.save();
+  ctx.font = `${size}px ${font || "'Consolas', monospace"}`;
+  ctx.shadowColor = color; ctx.shadowBlur = blur;
+  ctx.fillStyle = color;
+  ctx.fillText(txt, x, y);
+  ctx.restore();
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// quadratic bezier point
+function qbez(p0, p1, p2, t) {
+  const u = 1 - t;
+  return {
+    x: u * u * p0.x + 2 * u * t * p1.x + t * t * p2.x,
+    y: u * u * p0.y + 2 * u * t * p1.y + t * t * p2.y,
+  };
+}
+
+// ---------- background ----------
+function drawBackground(t) {
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, W, H);
+
+  // perspective grid, slow drift
+  ctx.save();
+  ctx.strokeStyle = 'rgba(34,211,238,0.05)';
+  ctx.lineWidth = 1;
+  const drift = (t * 0.012) % 40;
+  for (let x = -40; x < W + 40; x += 40) {
+    ctx.beginPath(); ctx.moveTo(x + drift, 0); ctx.lineTo(x + drift, H); ctx.stroke();
+  }
+  for (let y = -40; y < H + 40; y += 40) {
+    ctx.beginPath(); ctx.moveTo(0, y + drift); ctx.lineTo(W, y + drift); ctx.stroke();
+  }
+  ctx.restore();
+
+  // ambient star specks
+  const rng = mulberry32(42);
+  for (let i = 0; i < 70; i++) {
+    const sx = rng() * W, sy = rng() * H, ph = rng() * Math.PI * 2;
+    const a = 0.10 + 0.10 * Math.sin(t / 900 + ph);
+    ctx.fillStyle = `rgba(148,163,184,${a.toFixed(3)})`;
+    ctx.fillRect(sx, sy, 1.6, 1.6);
+  }
+
+  // vignette
+  const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, H * 0.85);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.55)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// ---------- title ----------
+function drawTitle(t) {
+  const full = 'hdd-analyzer';
+  const shown = full.slice(0, Math.floor(clamp((t - 250) / 1100, 0, 1) * full.length));
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  glowText(shown, 70, 96, 52, CYAN, 22, "'Consolas', monospace");
+  // caret
+  if (t < 1600 && Math.floor(t / 220) % 2 === 0) {
+    ctx.font = "52px 'Consolas', monospace";
+    const wpx = ctx.measureText(shown).width;
+    ctx.fillStyle = CYAN;
+    ctx.fillRect(70 + wpx + 6, 58, 6, 44);
+  }
+  const ta = clamp((t - 1500) / 600, 0, 1);
+  ctx.globalAlpha = ta;
+  glowText('AI TRIAGE FOR DYING HARD DRIVES', 72, 132, 19, VIOLET, 8);
+  ctx.globalAlpha = ta * (0.55 + 0.2 * Math.sin(t / 500));
+  glowText('walk · estimate · scan · report', 72, 160, 15, '#64748b', 0);
+  ctx.restore();
+}
+
+// ---------- platter ----------
+function drawPlatter(t) {
+  const { x, y, r } = PLATTER;
+  const spin = t / 700;
+
+  ctx.save();
+  // outer glow ring
+  ctx.shadowColor = CYAN; ctx.shadowBlur = 30;
+  ctx.strokeStyle = 'rgba(34,211,238,0.85)';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // platter body
+  const body = ctx.createRadialGradient(x - 40, y - 40, 20, x, y, r);
+  body.addColorStop(0, '#101b2e');
+  body.addColorStop(1, '#070c18');
+  ctx.fillStyle = body;
+  ctx.beginPath(); ctx.arc(x, y, r - 3, 0, Math.PI * 2); ctx.fill();
+
+  // data tracks
+  for (let i = 1; i <= 6; i++) {
+    const tr = r * (0.25 + i * 0.115);
+    ctx.strokeStyle = `rgba(34,211,238,${0.10 + 0.03 * i})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(x, y, tr, 0, Math.PI * 2); ctx.stroke();
+    // glinting sector arcs, rotating
+    const segs = 2 + (i % 3);
+    for (let s = 0; s < segs; s++) {
+      const a0 = spin * (i % 2 ? 1 : -0.7) + s * (Math.PI * 2 / segs);
+      ctx.strokeStyle = `rgba(34,211,238,${0.35 + 0.1 * Math.sin(t / 300 + i)})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(x, y, tr, a0, a0 + 0.55); ctx.stroke();
+    }
+  }
+
+  // spindle
+  ctx.fillStyle = '#0c1424';
+  ctx.beginPath(); ctx.arc(x, y, 26, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(167,139,250,0.8)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, y, 26, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = VIOLET;
+  ctx.shadowColor = VIOLET; ctx.shadowBlur = 12;
+  ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // actuator arm sweeping
+  const armA = -0.5 + 0.28 * Math.sin(t / 650);
+  const ax = x + Math.cos(armA) * (r + 46);
+  const ay = y + Math.sin(armA) * (r + 46);
+  const hx = x + Math.cos(armA + Math.PI) * (r * 0.62);
+  const hy = y + Math.sin(armA + Math.PI) * (r * 0.62);
+  ctx.strokeStyle = '#94a3b8';
+  ctx.lineWidth = 7; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(hx, hy); ctx.stroke();
+  ctx.strokeStyle = '#475569'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(hx, hy); ctx.stroke();
+  // read head glow
+  ctx.fillStyle = AMBER;
+  ctx.shadowColor = AMBER; ctx.shadowBlur = 16;
+  ctx.beginPath(); ctx.arc(hx, hy, 5, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // label
+  ctx.textAlign = 'center';
+  glowText('LEGACY DRIVE // 1.2M FILES', x, y + r + 42, 15, '#64748b', 0);
+  glowText('READ-ONLY', x, y + r + 64, 13, GREEN, 6);
+  ctx.restore();
+}
+
+// ---------- scanner ----------
+function scanFlash(t) {
+  // 0..1 intensity if any file is currently inside the scanner
+  let m = 0;
+  for (const f of FILES) {
+    const s = f.t0 + f.travel, e = s + f.scan;
+    if (t >= s && t <= e) {
+      const p = (t - s) / f.scan;
+      m = Math.max(m, Math.sin(p * Math.PI));
+    }
+  }
+  return m;
+}
+
+function drawScanner(t) {
+  const { x, y, r } = SCANNER;
+  const flash = scanFlash(t);
+  const rot = t / 1400;
+
+  ctx.save();
+  // rotating hex ring x2
+  for (const [rr, dir, col, lw] of [[r, 1, CYAN, 2.5], [r + 16, -0.6, VIOLET, 1.5]]) {
+    ctx.strokeStyle = col;
+    ctx.globalAlpha = 0.75 + flash * 0.25;
+    ctx.lineWidth = lw;
+    ctx.shadowColor = col; ctx.shadowBlur = 14 + flash * 22;
+    ctx.beginPath();
+    for (let i = 0; i <= 6; i++) {
+      const a = rot * dir + i * Math.PI / 3;
+      const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr;
+      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+
+  // core
+  const coreR = 20 + flash * 8 + 2 * Math.sin(t / 250);
+  const cg = ctx.createRadialGradient(x, y, 2, x, y, coreR * 2);
+  cg.addColorStop(0, `rgba(255,255,255,${0.85 * (0.4 + flash * 0.6)})`);
+  cg.addColorStop(0.4, `rgba(34,211,238,${0.5 + flash * 0.5})`);
+  cg.addColorStop(1, 'rgba(34,211,238,0)');
+  ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.arc(x, y, coreR * 2, 0, Math.PI * 2); ctx.fill();
+
+  // vertical scan beam sweep during flash
+  if (flash > 0.05) {
+    const bx = x - r + 2 * r * ((t % 300) / 300);
+    ctx.strokeStyle = `rgba(52,211,153,${(0.7 * flash).toFixed(3)})`;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = GREEN; ctx.shadowBlur = 12;
+    ctx.beginPath(); ctx.moveTo(bx, y - r * 0.85); ctx.lineTo(bx, y + r * 0.85); ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  ctx.textAlign = 'center';
+  glowText('LLM CLASSIFIER', x, y + r + 52, 15, CYAN, 8);
+  ctx.globalAlpha = 0.35 + flash * 0.65;
+  glowText(flash > 0.05 ? '▚ ANALYZING CONTENT ▞' : 'IDLE', x, y + r + 74, 12, flash > 0.05 ? GREEN : '#64748b', 6);
+  ctx.restore();
+}
+
+// ---------- file chips ----------
+function chipColor(f, phase) {
+  if (phase < 2) return CYAN;                 // unknown until scanned
+  return f.keep ? GREEN : (f.score > 20 ? AMBER : RED);
+}
+
+function drawChip(f, t) {
+  const tl = t - f.t0;
+  if (tl < 0 || tl > f.travel + f.scan + f.exit) return;
+
+  let pos, alpha = 1, phase, scale = 1;
+  const start = { x: PLATTER.x + 90, y: PLATTER.y - 40 + f.jitter * 2 };
+  const mid = { x: (PLATTER.x + SCANNER.x) / 2, y: PLATTER.y - 120 + f.jitter };
+  const scanP = { x: SCANNER.x, y: SCANNER.y };
+  // hold outside the hex until the previous chip has cleared the core
+  const queueP = { x: SCANNER.x - 122, y: SCANNER.y - 16 + f.jitter * 0.5 };
+
+  if (tl < f.travel) {
+    phase = 0;
+    pos = qbez(start, mid, queueP, easeInOut(tl / f.travel));
+    alpha = clamp(tl / 200, 0, 1);
+  } else if (tl < f.travel + f.scan) {
+    phase = 1;
+    const p = (tl - f.travel) / f.scan;
+    const dart = easeOut(clamp(p * 3, 0, 1));
+    pos = { x: lerp(queueP.x, scanP.x, dart), y: lerp(queueP.y, scanP.y, dart) };
+    scale = 1 + 0.15 * Math.sin(p * Math.PI);
+  } else {
+    phase = 2;
+    const p = (tl - f.travel - f.scan) / f.exit;
+    if (f.keep) {
+      const slotY = REPORT.y + 46 + f.slot * 34 + 12;
+      const dest = { x: REPORT.x + 30, y: slotY };
+      const midE = { x: (scanP.x + dest.x) / 2, y: scanP.y - 150 };
+      pos = qbez(scanP, midE, dest, easeInOut(p));
+      alpha = 1 - easeIn(clamp((p - 0.75) / 0.25, 0, 1));
+    } else {
+      // rejected: tumble down and fade
+      const e = easeIn(p);
+      pos = { x: scanP.x + 40 * p + f.jitter * 3 * p, y: scanP.y + 230 * e };
+      alpha = 1 - p;
+    }
+  }
+
+  const col = chipColor(f, phase);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(pos.x, pos.y);
+  if (phase === 2 && !f.keep) ctx.rotate((tl - f.travel - f.scan) / f.exit * 0.9 * (f.jitter > 0 ? 1 : -1));
+  ctx.scale(scale, scale);
+
+  const label = f.name.length > 20 ? f.name.slice(0, 19) + '…' : f.name;
+  ctx.font = "12px 'Consolas', monospace";
+  const w = ctx.measureText(label).width + 26;
+
+  ctx.shadowColor = col; ctx.shadowBlur = 10;
+  ctx.fillStyle = 'rgba(8,14,26,0.92)';
+  roundRect(-w / 2, -12, w, 24, 6); ctx.fill();
+  ctx.strokeStyle = col; ctx.lineWidth = 1.4;
+  roundRect(-w / 2, -12, w, 24, 6); ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // doc glyph
+  ctx.strokeStyle = col; ctx.lineWidth = 1.2;
+  ctx.strokeRect(-w / 2 + 7, -7, 10, 14);
+  ctx.beginPath();
+  ctx.moveTo(-w / 2 + 9, -3); ctx.lineTo(-w / 2 + 15, -3);
+  ctx.moveTo(-w / 2 + 9, 0);  ctx.lineTo(-w / 2 + 15, 0);
+  ctx.moveTo(-w / 2 + 9, 3);  ctx.lineTo(-w / 2 + 15, 3);
+  ctx.stroke();
+
+  ctx.fillStyle = phase < 2 ? TEXT : col;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText(label, -w / 2 + 21, 1);
+
+  // score badge after scan
+  if (phase === 2) {
+    ctx.textAlign = 'center';
+    ctx.font = "bold 12px 'Consolas', monospace";
+    ctx.shadowColor = col; ctx.shadowBlur = 8;
+    ctx.fillStyle = col;
+    ctx.fillText(String(f.score), 0, -22);
+    ctx.shadowBlur = 0;
+  }
+  ctx.restore();
+}
+
+// ---------- report panel ----------
+function panelFrame(x, y, w, h, title, col) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(8,14,26,0.82)';
+  roundRect(x, y, w, h, 10); ctx.fill();
+  ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+  ctx.shadowColor = col; ctx.shadowBlur = 12;
+  roundRect(x, y, w, h, 10); ctx.stroke();
+  ctx.shadowBlur = 0;
+  // corner ticks
+  ctx.strokeStyle = col; ctx.lineWidth = 2.5;
+  for (const [cx, cy, dx, dy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) {
+    ctx.beginPath();
+    ctx.moveTo(cx + dx * 16, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + dy * 16);
+    ctx.stroke();
+  }
+  ctx.textAlign = 'left';
+  glowText(title, x + 16, y + 27, 15, col, 8);
+  ctx.restore();
+}
+
+function drawReport(t) {
+  const { x, y, w, h } = REPORT;
+  panelFrame(x, y, w, h, '▤ SALVAGE REPORT — TOP HITS', GREEN);
+
+  const keepers = FILES.filter(f => f.keep);
+  ctx.save();
+  ctx.font = "13px 'Consolas', monospace";
+  for (const f of keepers) {
+    const arrive = f.t0 + f.travel + f.scan + f.exit * 0.8;
+    const p = clamp((t - arrive) / 350, 0, 1);
+    if (p <= 0) continue;
+    const ry = y + 46 + f.slot * 34;
+    ctx.globalAlpha = p;
+
+    // row highlight sweep on arrival
+    if (p < 1) {
+      ctx.fillStyle = `rgba(52,211,153,${(0.25 * (1 - p)).toFixed(3)})`;
+      roundRect(x + 10, ry, w - 20, 26, 5); ctx.fill();
+    }
+    ctx.fillStyle = TEXT;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    const nm = f.name.length > 22 ? f.name.slice(0, 21) + '…' : f.name;
+    ctx.fillText(nm, x + 18, ry + 13);
+
+    // score bar
+    const bw = 60, bx = x + w - bw - 48;
+    ctx.fillStyle = 'rgba(51,65,85,0.6)';
+    roundRect(bx, ry + 8, bw, 10, 4); ctx.fill();
+    ctx.fillStyle = GREEN;
+    ctx.shadowColor = GREEN; ctx.shadowBlur = 6;
+    roundRect(bx, ry + 8, bw * (f.score / 100) * easeOut(p), 10, 4); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = GREEN;
+    ctx.textAlign = 'right';
+    ctx.fillText(String(f.score), x + w - 16, ry + 13);
+  }
+  ctx.restore();
+}
+
+// ---------- spend gauge ----------
+function drawGauge(t) {
+  const { x, y, w, h } = GAUGE;
+  panelFrame(x, y, w, h, '◈ SPEND CAP', AMBER);
+
+  // spend = files fully scanned so far
+  let done = 0;
+  for (const f of FILES) if (t > f.t0 + f.travel + f.scan) done++;
+  const partial = scanFlash(t) * 0.5;
+  const spend = Math.min(5, (done + partial) * 0.21);
+  const frac = spend / 5;
+
+  const bx = x + 16, bw = w - 32, by = y + 44, bh = 16;
+  ctx.save();
+  ctx.fillStyle = 'rgba(51,65,85,0.6)';
+  roundRect(bx, by, bw, bh, 6); ctx.fill();
+  const bg = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+  bg.addColorStop(0, GREEN); bg.addColorStop(0.7, AMBER); bg.addColorStop(1, RED);
+  ctx.fillStyle = bg;
+  ctx.shadowColor = AMBER; ctx.shadowBlur = 8;
+  roundRect(bx, by, Math.max(6, bw * frac), bh, 6); ctx.fill();
+  ctx.shadowBlur = 0;
+
+  ctx.font = "13px 'Consolas', monospace";
+  ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = AMBER;
+  ctx.fillText(`$${spend.toFixed(2)} / $5.00 HARD CAP`, x + w - 16, y + 30);
+  ctx.restore();
+}
+
+// ---------- stats ticker ----------
+function drawTicker(t) {
+  const p = clamp(t / LOOP, 0, 1);
+  const walked = Math.floor(1204882 * easeOut(clamp(t / 8000, 0, 1)));
+  let scanned = 0;
+  for (const f of FILES) if (t > f.t0 + f.travel + f.scan) scanned++;
+  ctx.save();
+  ctx.font = "14px 'Consolas', monospace";
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = '#64748b';
+  const parts = [
+    ['WALKED', walked.toLocaleString('en-US'), CYAN],
+    ['SCANNED', String(scanned), GREEN],
+    ['KEPT', String(FILES.filter(f => f.keep && t > f.t0 + f.travel + f.scan + f.exit).length), AMBER],
+  ];
+  let tx = 70;
+  for (const [k, v, col] of parts) {
+    ctx.fillStyle = '#475569';
+    ctx.fillText(k, tx, 690);
+    tx += ctx.measureText(k).width + 10;
+    ctx.fillStyle = col;
+    ctx.shadowColor = col; ctx.shadowBlur = 6;
+    ctx.fillText(v, tx, 690);
+    ctx.shadowBlur = 0;
+    tx += ctx.measureText(v).width + 36;
+  }
+  ctx.restore();
+  void p;
+}
+
+// ---------- scanlines / CRT flavor ----------
+function drawScanlines(t) {
+  ctx.save();
+  ctx.globalAlpha = 0.05;
+  ctx.fillStyle = '#000';
+  for (let y = (t * 0.02) % 4; y < H; y += 4) ctx.fillRect(0, y, W, 1.6);
+  ctx.restore();
+}
+
+// ---------- master render ----------
+function render(tRaw) {
+  const t = ((tRaw % LOOP) + LOOP) % LOOP;
+  drawBackground(t);
+
+  // conveyor path hint: dotted arc platter -> scanner
+  ctx.save();
+  ctx.setLineDash([3, 9]);
+  ctx.lineDashOffset = -t * 0.06;
+  ctx.strokeStyle = 'rgba(34,211,238,0.28)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(PLATTER.x + 95, PLATTER.y - 45);
+  ctx.quadraticCurveTo((PLATTER.x + SCANNER.x) / 2, PLATTER.y - 125, SCANNER.x - 6, SCANNER.y - 6);
+  ctx.stroke();
+  ctx.restore();
+
+  drawPlatter(t);
+  drawScanner(t);
+  drawReport(t);
+  drawGauge(t);
+  for (const f of FILES) drawChip(f, t);
+  drawTitle(t);
+  drawTicker(t);
+  drawScanlines(t);
+
+  // loop edge crossfade: fade non-title UI at the very end so restart is soft
+  const tail = clamp((t - (LOOP - 450)) / 450, 0, 1);
+  if (tail > 0) {
+    ctx.fillStyle = `rgba(5,7,15,${(easeIn(tail) * 0.9).toFixed(3)})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+// ---------- drive ----------
+let raf = null;
+function loop(ts) {
+  render(ts);
+  raf = requestAnimationFrame(loop);
+}
+window.seek = function(ms) {
+  if (raf !== null) { cancelAnimationFrame(raf); raf = null; }
+  render(ms);
+};
+raf = requestAnimationFrame(loop);
+</script>
+</body>
+</html>

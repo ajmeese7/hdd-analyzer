@@ -11,9 +11,9 @@ Purpose: triage old hard drives for semantically valuable files using TypeSafe's
 
 - `walk ROOT --run NAME [--include SUBPATH ...]` -> writes `runs/NAME/inventory.jsonl` + prints summary (counts/bytes by category, skipped counts). No network, no API.
 - `estimate --run NAME` -> token + dollar estimate for a scan of the inventory. No network.
-- `scan --run NAME [--cap USD] [--limit N] [--min-prob P] [--yes] [--dry-run]` -> extraction + Jev calls, appends `runs/NAME/results.jsonl` incrementally (resumable: skips file hashes already present). Prints running spend. Hard-stops at cap (default $5). Prompts with the estimate before spending unless `--yes`. `--dry-run` does extraction only, zero API calls.
+- `scan --run NAME [--cap USD] [--limit N] [--yes] [--dry-run] [--only-name-only]` -> extraction + Jev calls, appends `runs/NAME/results.jsonl` incrementally (resumable: skips file hashes already present). Prints running spend. Hard-stops at cap (default $5). Prompts with the estimate before spending unless `--yes`. `--dry-run` does extraction only, zero API calls. `--only-name-only` restricts candidates to dedupe keys whose existing result has `extraction_status != "ok"`, for a cheap targeted re-scan after an extraction/categorization fix (bypasses the normal resume skip for those specific keys; everything else keeps normal resume semantics).
 - `report --run NAME [--top N] [--min-prob P]` -> `runs/NAME/report.md` + `report.csv`, ranked per category and overall.
-- `annotate --run NAME [--all] [--top N] [--min-prob P]` -> re-runs local extraction (zero API calls) to backfill `metadata_only`/`extraction_status` on existing `results.jsonl` rows. By default only the rows currently surfaced by the report tables are re-extracted; `--all` covers every row. Appends corrected rows, which supersede the originals since `report` keeps only the latest row per dedupe key.
+- `annotate --run NAME [--all] [--top N] [--min-prob P]` -> backfills `metadata_only`/`extraction_status` on `results.jsonl` rows that predate the fields entirely (zero API calls). Never overwrites a row that already has a stored scan-time status, since the report's "verified" column must reflect what Jev actually saw, not what extraction can do today; instead it lists such rows separately as re-scan candidates when today's extraction would now succeed. By default only report-surfaced rows are checked; `--all` covers every row.
 
 ## Walk stage (deterministic, free)
 
@@ -37,7 +37,15 @@ Real-drive walks showed most inventoried files come from dependency/build cache 
 
 **AppData policy (Windows):** AppData\Local and AppData\LocalLow are skipped as whole subtrees (never descended into) since they're machine-local install/cache trees. AppData\Roaming is left walkable, since real user configs and credentials live there (FileZilla, Thunderbird, etc.); the unconditional cache-name skips above still apply inside Roaming.
 
-Categories by extension: text (txt, md, csv, log, json, xml, yaml, ini, cfg, conf, eml, htm(l)), code (py, js, ts, c, cpp, h, java, rs, go, sh, ps1, bat, sql, rb, php, pl), doc (docx, doc, rtf, odt, xlsx, pdf), image (jpg, png, heic, gif, raw, cr2, tiff), archive (zip, 7z, rar, tar, gz), av (mp3, mp4, mov, avi, mkv, wav), binary/other. Size floor 32 bytes, ceiling for extraction sampling only (no file too big to inventory).
+Categories by extension: text (txt, md, csv, log, json, xml, yaml, ini, cfg, conf, eml, htm(l), plus credential/config formats: pem, key, crt, cer, csr, pub, env, toml, properties, tfvars, netrc, npmrc, pgpass, rtf), code (py, js, ts, c, cpp, h, java, rs, go, sh, ps1, bat, sql, rb, php, pl), doc (docx, doc, odt, xlsx, pdf), image (jpg, png, heic, gif, raw, cr2, tiff), archive (zip, 7z, rar, tar, gz), av (mp3, mp4, mov, avi, mkv, wav), binary/other. Size floor 32 bytes, ceiling for extraction sampling only (no file too big to inventory).
+
+The credential/config extensions were previously unmapped and fell into the
+"binary" default, so extraction never even tried them; headline hits like
+`private.pem`, `id_rsa`, and `API_keys.rtf` were judged by Jev on filename
+alone. `rtf` moved out of the `doc` category into `text`, since RTF is
+markup over plain text and gets a dedicated tag-stripping salvage
+(`_extract_rtf`) rather than the office-document zip handling used for
+docx/xlsx.
 
 ### Dedupe key: hash vs metadata
 
@@ -51,9 +59,26 @@ Tradeoff: two differently-named copies of the same non-text file (or of an overs
 
 - text/code: read first 16 KiB, decode via chardet, strip NUL-heavy content (binary masquerading).
 - pdf: pypdf, first 3 pages of extractable text.
-- docx/xlsx: read as zip, pull word/document.xml / shared strings, tag-strip, first 16 KiB. Plain .doc: latin-1 strings-style salvage of printable runs.
-- image/av/archive/binary: no content; judged on metadata only (path, name, size, mtime), marked `metadata_only`.
+- docx/xlsx: read as zip, pull word/document.xml / shared strings, tag-strip, first 16 KiB. Plain .doc: latin-1 strings-style salvage of printable runs. rtf: strip RTF control words and braces directly (regex), since RTF's escaping is regular enough not to need the legacy-doc printable-run heuristic.
+- image/av/archive: no content; judged on metadata only (path, name, size, mtime), marked `metadata_only`.
+- binary (no recognized extension): a content-sniffing fallback (see below) catches plain-text files hiding behind an unknown or missing extension before giving up on them.
 - Excerpt hard cap ~6000 chars (~1500 tokens) per file.
+
+### Content sniffing fallback for unrecognized-extension binaries
+
+A file with no extension or an extension outside the categorizer's map
+falls into "binary" by default, but some of these (`id_rsa`, `Login Data`,
+`myKeyStore`) are plain text with no clue in the name. `should_sniff_binary`
+gates a 4 KB peek: eligible only when category is `binary`, size is at most
+1 MB, and the extension is not in a denylist of unambiguously binary
+formats (`exe`, `dll`, `sqlite`, `pfx`, `kdbx`, and similar) that are
+excluded from sniffing even though they also default to `binary`. The peek
+reuses the same NUL-heavy binary detection as `sanitize_excerpt`, inverted:
+if the sample does not look binary, it is extracted normally with
+`extraction_status "ok"`; if it does, the file is left `unsupported`, same
+as before. This is purely an extraction-time decision; it does not change
+the walker's hash-gating (`should_hash_content`), which still only
+content-hashes the text/code/doc categories.
 
 ### Extraction transparency
 

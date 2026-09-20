@@ -53,7 +53,8 @@ def _cmd_estimate(args: argparse.Namespace) -> int:
 
 def _cmd_scan(args: argparse.Namespace) -> int:
     run_dir = _run_dir(args.run)
-    estimate = scan_mod.estimate_run(run_dir, limit=args.limit)
+    only_keys = scan_mod.load_name_only_keys(run_dir) if args.only_name_only else None
+    estimate = scan_mod.estimate_run(run_dir, limit=args.limit, only_keys=only_keys)
 
     print(f"candidate files: {estimate.candidate_count}")
     print(f"estimated tokens: {estimate.estimated_tokens:,}")
@@ -88,6 +89,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             cap_usd=args.cap,
             limit=args.limit,
             concurrency=DEFAULT_CONCURRENCY,
+            only_keys=only_keys,
         )
     )
 
@@ -106,6 +108,12 @@ def _cmd_annotate(args: argparse.Namespace) -> int:
     if outcome.became_name_only:
         print(f"revealed as name-only ({len(outcome.became_name_only)}):")
         for path in outcome.became_name_only:
+            print(f"  {path}")
+    if outcome.rescan_candidates:
+        print(f"candidates for a cheap targeted re-scan ({len(outcome.rescan_candidates)}):")
+        print("  scan-time judgment was name-only, but current extraction now succeeds")
+        print("  re-classify with: scan --run <name> --only-name-only")
+        for path in outcome.rescan_candidates:
             print(f"  {path}")
     return 0
 
@@ -138,6 +146,11 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--limit", type=int, default=None, help="Limit number of files scanned.")
     scan_parser.add_argument("--yes", action="store_true", help="Skip interactive confirmation.")
     scan_parser.add_argument("--dry-run", action="store_true", help="Extraction only; zero API calls.")
+    scan_parser.add_argument(
+        "--only-name-only",
+        action="store_true",
+        help="Restrict candidates to dedupe keys whose existing result has extraction_status != ok.",
+    )
     scan_parser.set_defaults(func=_cmd_scan)
 
     annotate_parser = subparsers.add_parser(

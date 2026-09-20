@@ -42,7 +42,7 @@ def test_extract_office_xml_skips_oversized_member_without_decompressing(tmp_pat
     with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("word/document.xml", b"<w:t>this is well over ten bytes</w:t>")
 
-    excerpt, metadata_only, extraction_status = extract_excerpt(docx_path, category="doc", ext="docx")
+    excerpt, metadata_only, extraction_status = extract_excerpt(docx_path, category="doc", ext="docx", size=docx_path.stat().st_size)
 
     assert excerpt is None
     assert metadata_only is True
@@ -54,7 +54,7 @@ def test_extract_office_xml_reads_member_under_cap(tmp_path):
     with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("word/document.xml", b"<w:t>hello world</w:t>")
 
-    excerpt, metadata_only, extraction_status = extract_excerpt(docx_path, category="doc", ext="docx")
+    excerpt, metadata_only, extraction_status = extract_excerpt(docx_path, category="doc", ext="docx", size=docx_path.stat().st_size)
 
     assert excerpt is not None
     assert "hello world" in excerpt
@@ -66,7 +66,7 @@ def test_extract_excerpt_unsupported_category_never_tries_content(tmp_path):
     image_path = tmp_path / "photo.jpg"
     image_path.write_bytes(b"\xff\xd8\xff")
 
-    excerpt, metadata_only, extraction_status = extract_excerpt(image_path, category="image", ext="jpg")
+    excerpt, metadata_only, extraction_status = extract_excerpt(image_path, category="image", ext="jpg", size=3)
 
     assert excerpt is None
     assert metadata_only is True
@@ -76,7 +76,7 @@ def test_extract_excerpt_unsupported_category_never_tries_content(tmp_path):
 def test_extract_excerpt_missing_file_is_error_not_no_text(tmp_path):
     missing = tmp_path / "gone.txt"
 
-    excerpt, metadata_only, extraction_status = extract_excerpt(missing, category="text", ext="txt")
+    excerpt, metadata_only, extraction_status = extract_excerpt(missing, category="text", ext="txt", size=0)
 
     assert excerpt is None
     assert metadata_only is True
@@ -87,8 +87,112 @@ def test_extract_excerpt_ok_for_readable_text(tmp_path):
     text_path = tmp_path / "notes.txt"
     text_path.write_text("hello world", encoding="utf-8")
 
-    excerpt, metadata_only, extraction_status = extract_excerpt(text_path, category="text", ext="txt")
+    excerpt, metadata_only, extraction_status = extract_excerpt(text_path, category="text", ext="txt", size=text_path.stat().st_size)
 
     assert excerpt == "hello world"
     assert metadata_only is False
     assert extraction_status == extract_mod.EXTRACTION_STATUS_OK
+
+
+def test_extract_excerpt_rtf_strips_control_words(tmp_path):
+    rtf_path = tmp_path / "note.rtf"
+    rtf_path.write_bytes(rb"{\rtf1\ansi\deff0 {\fonttbl{\f0 Arial;}}\f0\fs24 hello world}")
+
+    excerpt, metadata_only, extraction_status = extract_excerpt(rtf_path, category="text", ext="rtf", size=rtf_path.stat().st_size)
+
+    assert excerpt is not None
+    assert "hello world" in excerpt
+    assert metadata_only is False
+    assert extraction_status == extract_mod.EXTRACTION_STATUS_OK
+
+
+def test_should_sniff_binary_true_for_small_unknown_extension():
+    assert extract_mod.should_sniff_binary("binary", "", 100) is True
+    assert extract_mod.should_sniff_binary("binary", "somethingweird", 100) is True
+
+
+def test_should_sniff_binary_false_for_non_binary_category():
+    assert extract_mod.should_sniff_binary("text", "", 100) is False
+
+
+def test_should_sniff_binary_false_for_known_binary_extensions():
+    for ext in ("exe", "dll", "sqlite", "pfx", "kdbx"):
+        assert extract_mod.should_sniff_binary("binary", ext, 100) is False
+
+
+def test_should_sniff_binary_false_when_oversized():
+    assert extract_mod.should_sniff_binary("binary", "", extract_mod.SNIFF_MAX_BYTES + 1) is False
+
+
+def test_should_sniff_binary_true_at_exact_size_boundary():
+    assert extract_mod.should_sniff_binary("binary", "", extract_mod.SNIFF_MAX_BYTES) is True
+
+
+def test_extract_excerpt_sniffs_text_like_unknown_extension_file(tmp_path):
+    key_path = tmp_path / "id_rsa"
+    key_path.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nabc123\n-----END OPENSSH PRIVATE KEY-----\n", encoding="utf-8")
+
+    excerpt, metadata_only, extraction_status = extract_excerpt(key_path, category="binary", ext="", size=key_path.stat().st_size)
+
+    assert excerpt is not None
+    assert "BEGIN OPENSSH PRIVATE KEY" in excerpt
+    assert metadata_only is False
+    assert extraction_status == extract_mod.EXTRACTION_STATUS_OK
+
+
+def test_extract_excerpt_sniff_fails_on_genuinely_binary_content(tmp_path):
+    blob_path = tmp_path / "myKeyStore"
+    blob_path.write_bytes(b"\x00\x01\x02\x03" * 500)
+
+    excerpt, metadata_only, extraction_status = extract_excerpt(blob_path, category="binary", ext="", size=blob_path.stat().st_size)
+
+    assert excerpt is None
+    assert metadata_only is True
+    assert extraction_status == extract_mod.EXTRACTION_STATUS_UNSUPPORTED
+
+
+def test_extract_excerpt_never_sniffs_known_binary_extension(tmp_path):
+    exe_path = tmp_path / "app.exe"
+    exe_path.write_text("hello world this is actually text", encoding="utf-8")
+
+    excerpt, metadata_only, extraction_status = extract_excerpt(exe_path, category="binary", ext="exe", size=exe_path.stat().st_size)
+
+    assert excerpt is None
+    assert metadata_only is True
+    assert extraction_status == extract_mod.EXTRACTION_STATUS_UNSUPPORTED
+
+
+def test_extract_excerpt_does_not_sniff_oversized_unknown_extension_file(tmp_path):
+    big_path = tmp_path / "bigblob"
+    big_path.write_text("hello world", encoding="utf-8")
+
+    excerpt, metadata_only, extraction_status = extract_excerpt(
+        big_path, category="binary", ext="", size=extract_mod.SNIFF_MAX_BYTES + 1
+    )
+
+    assert excerpt is None
+    assert metadata_only is True
+    assert extraction_status == extract_mod.EXTRACTION_STATUS_UNSUPPORTED
+
+
+def test_sniff_rejects_binary_magic_despite_text_like_payload(tmp_path):
+    from hdd_analyzer.extract import extract_excerpt
+
+    webp = tmp_path / "credential_dump.webp"
+    webp.write_bytes(b"RIFF" + b"A" * 500)
+    excerpt, metadata_only, status = extract_excerpt(webp, "binary", "webp", 504)
+    assert excerpt is None
+    assert metadata_only is True
+    assert status == "unsupported"
+
+
+def test_sniff_accepts_extensionless_text_key(tmp_path):
+    from hdd_analyzer.extract import extract_excerpt
+
+    key = tmp_path / "id_rsa"
+    body = b"-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n"
+    key.write_bytes(body)
+    excerpt, metadata_only, status = extract_excerpt(key, "binary", "", len(body))
+    assert status == "ok"
+    assert metadata_only is False
+    assert "PRIVATE KEY" in excerpt

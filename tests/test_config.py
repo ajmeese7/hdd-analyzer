@@ -28,6 +28,19 @@ def test_categorize_unknown_extension_is_binary():
     assert categorize("") == "binary"
 
 
+def test_categorize_credential_and_config_extensions_are_text_not_binary():
+    for ext in (
+        "pem", "key", "crt", "cer", "csr", "pub", "env", "toml",
+        "properties", "tfvars", "netrc", "npmrc", "pgpass",
+    ):
+        assert categorize(ext) == "text", ext
+        assert categorize(ext.upper()) == "text", ext
+
+
+def test_categorize_rtf_is_text_not_doc():
+    assert categorize("rtf") == "text"
+
+
 def test_skip_dir_matches_common_system_dirs():
     assert is_skip_dir("Windows", ())
     assert is_skip_dir("node_modules", ())

@@ -29,6 +29,26 @@ _TEXT_CATEGORIES = {"text", "code"}
 _NUL_RATIO_THRESHOLD = 0.01
 _TAG_RE = re.compile(rb"<[^>]+>")
 _PRINTABLE_RUN_RE = re.compile(rb"[\x20-\x7e]{4,}")
+_RTF_CONTROL_WORD_RE = re.compile(rb"\\[a-zA-Z]+-?\d*[ ]?")
+_RTF_BRACE_RE = re.compile(rb"[{}]")
+
+# Content sniffing: files with no extension or an extension we don't recognize
+# fall into category "binary" by default. Most are genuinely binary, but some
+# (id_rsa, "Login Data", myKeyStore) are plain text with no clue in the name.
+# Sniffing the first few KB and reusing the existing NUL-heavy binary
+# detection (inverted: proceed only if it does NOT look binary) catches these
+# without hashing or fully reading every binary file on the drive. Extensions
+# that are unambiguously binary formats are excluded from sniffing even
+# though they fall into the default "binary" category, since a signature
+# match beats a text/NUL heuristic for those.
+SNIFF_MAX_BYTES = 1 * 1024 * 1024
+SNIFF_READ_BYTES = 4096
+KNOWN_BINARY_EXTS = frozenset(
+    {
+        "exe", "dll", "so", "dylib", "sys", "msi", "bin", "dat", "iso", "img", "vhd", "vmdk",
+        "sqlite", "sqlite3", "db", "pfx", "p12", "kdbx", "class", "pyc", "o", "a", "lib", "node", "wasm",
+    }
+)
 
 
 def sanitize_excerpt(raw: bytes) -> str | None:
@@ -114,6 +134,73 @@ def _extract_office_xml(path: Path, member_candidates: tuple[str, ...]) -> tuple
     return None, EXTRACTION_STATUS_NO_TEXT
 
 
+def _extract_rtf(path: Path) -> tuple[str | None, str]:
+    """Salvage plain text from RTF by stripping its markup (control words and braces).
+
+    RTF is markup over plain text, similar in spirit to the legacy .doc
+    printable-run salvage, but RTF's escaping conventions are regular enough
+    to strip directly rather than relying on printable-run detection.
+    """
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(EXTRACT_READ_BYTES)
+    except OSError:
+        return None, EXTRACTION_STATUS_ERROR
+    stripped = _RTF_BRACE_RE.sub(b"", _RTF_CONTROL_WORD_RE.sub(b" ", raw))
+    text = stripped.decode("latin-1", errors="replace").strip()
+    if not text:
+        return None, EXTRACTION_STATUS_NO_TEXT
+    return text[:EXCERPT_CHAR_CAP], EXTRACTION_STATUS_OK
+
+
+def should_sniff_binary(category: str, ext: str, size: int) -> bool:
+    """Decide whether an unrecognized-extension "binary" file is worth a content peek.
+
+    Only files that fell into the default "binary" category (no extension,
+    or an extension we don't recognize) are eligible, and only if they are
+    small enough that a 4 KB peek is cheap relative to the file. Extensions
+    that are unambiguously binary formats (KNOWN_BINARY_EXTS) are excluded
+    even though they default to "binary", since sniffing them would waste an
+    IO read on a file we already know is not text.
+    """
+    if category != "binary":
+        return False
+    if ext in KNOWN_BINARY_EXTS:
+        return False
+    return size <= SNIFF_MAX_BYTES
+
+
+# Compressed payloads can carry few NUL bytes and fool the text heuristic, so
+# reject well-known binary signatures before it runs.
+_BINARY_MAGIC_PREFIXES = (
+    b"MZ", b"\x7fELF", b"PK\x03\x04", b"PK\x05\x06", b"Rar!", b"7z\xbc\xaf\x27\x1c",
+    b"\x1f\x8b", b"RIFF", b"\x89PNG", b"\xff\xd8\xff", b"GIF87a", b"GIF89a",
+    b"OggS", b"fLaC", b"ID3", b"BM", b"\xca\xfe\xba\xbe", b"SQLite format 3\x00",
+)
+
+
+def _has_binary_magic(raw: bytes) -> bool:
+    return raw.startswith(_BINARY_MAGIC_PREFIXES) or raw[4:8] == b"ftyp"
+
+
+def _extract_sniffed_binary(path: Path) -> tuple[str | None, str]:
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(SNIFF_READ_BYTES)
+    except OSError:
+        return None, EXTRACTION_STATUS_ERROR
+    if _has_binary_magic(raw):
+        return None, EXTRACTION_STATUS_UNSUPPORTED
+    text = sanitize_excerpt(raw)
+    if text is None:
+        # Sniff failed: this really is binary content, leave it unsupported
+        # rather than claiming a failed extraction attempt.
+        return None, EXTRACTION_STATUS_UNSUPPORTED
+    if not text:
+        return text, EXTRACTION_STATUS_NO_TEXT
+    return text, EXTRACTION_STATUS_OK
+
+
 def _extract_legacy_doc(path: Path) -> tuple[str | None, str]:
     """Salvage printable ASCII runs from a binary .doc file."""
     try:
@@ -128,9 +215,13 @@ def _extract_legacy_doc(path: Path) -> tuple[str | None, str]:
     return text[:EXCERPT_CHAR_CAP], EXTRACTION_STATUS_OK
 
 
-def _dispatch_extract(path: Path, category: str, ext: str) -> tuple[str | None, str]:
+def _dispatch_extract(path: Path, category: str, ext: str, sniff: bool) -> tuple[str | None, str]:
+    if ext == "rtf":
+        return _extract_rtf(path)
     if category in _TEXT_CATEGORIES:
         return _extract_text_or_code(path)
+    if sniff:
+        return _extract_sniffed_binary(path)
     if ext == "pdf":
         return _extract_pdf(path)
     if ext == "docx":
@@ -142,7 +233,19 @@ def _dispatch_extract(path: Path, category: str, ext: str) -> tuple[str | None, 
     return None, EXTRACTION_STATUS_UNSUPPORTED
 
 
-def extract_excerpt(path: Path, category: str, ext: str) -> tuple[str | None, bool, str]:
+def _extraction_eligible(category: str, ext: str, size: int) -> tuple[bool, bool]:
+    """Return (eligible, sniff): whether extraction should even be attempted.
+
+    `sniff` is True when eligibility comes from the binary content-sniffing
+    fallback rather than a recognized text/document category, so the caller
+    can pick the cheaper 4 KB peek instead of the normal dispatch path.
+    """
+    sniff = should_sniff_binary(category, ext, size)
+    eligible = sniff or ext in _SUPPORTED_EXTS or category in _TEXT_CATEGORIES
+    return eligible, sniff
+
+
+def extract_excerpt(path: Path, category: str, ext: str, size: int) -> tuple[str | None, bool, str]:
     """Return (excerpt, metadata_only, extraction_status).
 
     `excerpt` is None if unavailable. `extraction_status` distinguishes a
@@ -153,11 +256,12 @@ def extract_excerpt(path: Path, category: str, ext: str) -> tuple[str | None, bo
     per-file timeout, so a pathological PDF/doc cannot hang the whole scan.
     """
     ext = ext.lower()
-    if ext not in _SUPPORTED_EXTS and category not in _TEXT_CATEGORIES:
+    eligible, sniff = _extraction_eligible(category, ext, size)
+    if not eligible:
         return None, True, EXTRACTION_STATUS_UNSUPPORTED
 
     extended_path = Path(to_extended_path(str(path)))
-    future = _EXTRACT_EXECUTOR.submit(_dispatch_extract, extended_path, category, ext)
+    future = _EXTRACT_EXECUTOR.submit(_dispatch_extract, extended_path, category, ext, sniff)
     try:
         text, status = future.result(timeout=EXTRACT_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
@@ -168,7 +272,7 @@ def extract_excerpt(path: Path, category: str, ext: str) -> tuple[str | None, bo
     return text, metadata_only, status
 
 
-async def extract_excerpt_async(path: Path, category: str, ext: str) -> tuple[str | None, bool, str]:
+async def extract_excerpt_async(path: Path, category: str, ext: str, size: int) -> tuple[str | None, bool, str]:
     """Async twin of `extract_excerpt`, for pipelining extraction with classification.
 
     Submits to the same shared thread pool and awaits the future without
@@ -176,11 +280,12 @@ async def extract_excerpt_async(path: Path, category: str, ext: str) -> tuple[st
     serializing ahead of it.
     """
     ext = ext.lower()
-    if ext not in _SUPPORTED_EXTS and category not in _TEXT_CATEGORIES:
+    eligible, sniff = _extraction_eligible(category, ext, size)
+    if not eligible:
         return None, True, EXTRACTION_STATUS_UNSUPPORTED
 
     extended_path = Path(to_extended_path(str(path)))
-    future = _EXTRACT_EXECUTOR.submit(_dispatch_extract, extended_path, category, ext)
+    future = _EXTRACT_EXECUTOR.submit(_dispatch_extract, extended_path, category, ext, sniff)
     try:
         text, status = await asyncio.wait_for(asyncio.wrap_future(future), timeout=EXTRACT_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:

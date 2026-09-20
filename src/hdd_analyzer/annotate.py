@@ -41,10 +41,25 @@ class AnnotateOutcome:
     considered: int
     updated: int
     became_name_only: list[str]
+    rescan_candidates: list[str]
 
 
 def annotate_run(run_dir: Path, all_rows: bool = False, top_n: int = DEFAULT_TOP_N, min_prob: float = MIN_PROB_DEFAULT) -> AnnotateOutcome:
-    """Re-extract locally for report-surfaced rows (or all rows) and append corrected results."""
+    """Backfill missing extraction_status/metadata_only, without overwriting known scan-time judgments.
+
+    The report's "verified" column must reflect what the classifier actually
+    saw when it was scored, not what extraction can do today. A row that
+    already carries an extraction_status is a real record of that scan-time
+    judgment, so it is left untouched here even if a categorization or
+    extraction fix means the same file would extract successfully today;
+    retroactively relabeling it as content-verified would misrepresent what
+    Jev actually received. Re-extraction only backfills rows that predate
+    extraction_status tracking entirely (the field is absent).
+
+    Rows with a stored non-ok status where today's extraction *would* now
+    succeed are reported separately as `rescan_candidates`: good targets for
+    a cheap, targeted `scan --only-name-only` re-classification.
+    """
     inventory_path = run_dir / "inventory.jsonl"
     if not inventory_path.exists():
         raise FileNotFoundError(f"no inventory found at {inventory_path}; run `walk` first")
@@ -64,6 +79,7 @@ def annotate_run(run_dir: Path, all_rows: bool = False, top_n: int = DEFAULT_TOP
     considered = 0
     updated = 0
     became_name_only: list[str] = []
+    rescan_candidates: list[str] = []
 
     with open(results_path, "a", encoding="utf-8") as out:
         for row in results:
@@ -76,7 +92,15 @@ def annotate_run(run_dir: Path, all_rows: bool = False, top_n: int = DEFAULT_TOP
 
             considered += 1
             path = Path(record["path"])
-            excerpt, metadata_only, extraction_status = extract_excerpt(path, record["category"], record["ext"])
+            excerpt, metadata_only, extraction_status = extract_excerpt(
+                path, record["category"], record["ext"], record["size"]
+            )
+
+            stored_status = row.get("extraction_status")
+            if stored_status is not None:
+                if stored_status != "ok" and extraction_status == "ok":
+                    rescan_candidates.append(row["path"])
+                continue
 
             new_row = {**row, "metadata_only": metadata_only, "extraction_status": extraction_status}
             out.write(json.dumps(new_row) + "\n")
@@ -85,4 +109,6 @@ def annotate_run(run_dir: Path, all_rows: bool = False, top_n: int = DEFAULT_TOP
             if extraction_status != "ok":
                 became_name_only.append(row["path"])
 
-    return AnnotateOutcome(considered=considered, updated=updated, became_name_only=became_name_only)
+    return AnnotateOutcome(
+        considered=considered, updated=updated, became_name_only=became_name_only, rescan_candidates=rescan_candidates
+    )

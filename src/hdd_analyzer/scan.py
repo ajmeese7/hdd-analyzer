@@ -107,13 +107,56 @@ def load_resumed_keys(run_dir: Path) -> set[str]:
     return keys
 
 
-def eligible_records(records: list[dict[str, Any]], resumed_keys: set[str], limit: int | None = None) -> list[dict[str, Any]]:
-    """Filter inventory records to non-duplicate, unresolved candidates, honoring `limit`."""
+def load_name_only_keys(run_dir: Path) -> set[str]:
+    """Dedupe keys of existing result rows judged from filename alone (extraction_status != "ok").
+
+    Used by `scan --only-name-only` to restrict a re-scan to the small set of
+    rows a categorization/extraction fix might change, rather than
+    re-classifying files whose content was already verified.
+    """
+    results_path = run_dir / "results.jsonl"
+    if not results_path.exists():
+        return set()
+    latest: dict[str, dict[str, Any]] = {}
+    with open(results_path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            key = record.get("dedupe_key")
+            if key:
+                latest[key] = record
+    return {key for key, record in latest.items() if record.get("extraction_status") != "ok"}
+
+
+def eligible_records(
+    records: list[dict[str, Any]],
+    resumed_keys: set[str],
+    limit: int | None = None,
+    only_keys: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Filter inventory records to non-duplicate, unresolved candidates, honoring `limit`.
+
+    `only_keys`, when given, further restricts candidates to that set of
+    dedupe keys (used by `scan --only-name-only` for a cheap targeted
+    re-scan of previously name-only-judged rows).
+    """
     eligible: list[dict[str, Any]] = []
     for record in records:
         if record.get("dup_of") is not None:
             continue
-        if record["dedupe_key"] in resumed_keys:
+        key = record["dedupe_key"]
+        if only_keys is not None:
+            # only_keys already encodes "must re-scan this" (extraction_status
+            # != ok), so a prior successful-but-name-only result must not be
+            # skipped by the normal resume check here.
+            if key not in only_keys:
+                continue
+        elif key in resumed_keys:
             continue
         if limit is not None and len(eligible) >= limit:
             break
@@ -135,7 +178,12 @@ def _candidate_from_record(record: dict[str, Any], excerpt: str | None, metadata
     )
 
 
-def build_candidates(records: list[dict[str, Any]], resumed_keys: set[str], limit: int | None = None) -> list[ScanCandidate]:
+def build_candidates(
+    records: list[dict[str, Any]],
+    resumed_keys: set[str],
+    limit: int | None = None,
+    only_keys: set[str] | None = None,
+) -> list[ScanCandidate]:
     """Filter to non-duplicate, unresolved records and run local extraction, sequentially.
 
     Used by `estimate_run`, where a simple sequential pass is fine since no
@@ -143,9 +191,9 @@ def build_candidates(records: list[dict[str, Any]], resumed_keys: set[str], limi
     producer/consumer path instead so extraction IO overlaps API latency.
     """
     candidates: list[ScanCandidate] = []
-    for record in eligible_records(records, resumed_keys, limit):
+    for record in eligible_records(records, resumed_keys, limit, only_keys):
         path = Path(record["path"])
-        excerpt, metadata_only, extraction_status = extract_excerpt(path, record["category"], record["ext"])
+        excerpt, metadata_only, extraction_status = extract_excerpt(path, record["category"], record["ext"], record["size"])
         candidates.append(_candidate_from_record(record, excerpt, metadata_only, extraction_status))
     return candidates
 
@@ -244,11 +292,11 @@ class Estimate:
     estimated_cost_usd: float
 
 
-def estimate_run(run_dir: Path, limit: int | None = None) -> Estimate:
+def estimate_run(run_dir: Path, limit: int | None = None, only_keys: set[str] | None = None) -> Estimate:
     """Extraction-only, zero-network estimate of a scan's token/dollar cost."""
     records = load_inventory(run_dir)
     resumed_keys = load_resumed_keys(run_dir)
-    candidates = build_candidates(records, resumed_keys, limit)
+    candidates = build_candidates(records, resumed_keys, limit, only_keys)
 
     total_tokens = sum(estimate_candidate_tokens(c) for c in candidates)
     return Estimate(
@@ -275,7 +323,9 @@ async def _extract_worker(input_queue: asyncio.Queue, out_queue: asyncio.Queue) 
         except asyncio.QueueEmpty:
             return
         path = Path(record["path"])
-        excerpt, metadata_only, extraction_status = await extract_excerpt_async(path, record["category"], record["ext"])
+        excerpt, metadata_only, extraction_status = await extract_excerpt_async(
+            path, record["category"], record["ext"], record["size"]
+        )
         await out_queue.put(_candidate_from_record(record, excerpt, metadata_only, extraction_status))
 
 
@@ -328,17 +378,19 @@ async def run_scan(
     cap_usd: float = DEFAULT_CAP_USD,
     limit: int | None = None,
     concurrency: int = DEFAULT_CONCURRENCY,
+    only_keys: set[str] | None = None,
 ) -> ScanOutcome:
     """Dispatch classification calls for unresolved candidates, batch by batch.
 
     Extraction and classification are pipelined: a producer task extracts
     records concurrently and feeds finished candidates onto a queue while the
     consumer loop below classifies whatever batch is ready, so file IO for
-    the next batch overlaps API latency for the current one.
+    the next batch overlaps API latency for the current one. `only_keys`
+    restricts candidates to a specific dedupe-key set (see `--only-name-only`).
     """
     records = load_inventory(run_dir)
     resumed_keys = load_resumed_keys(run_dir)
-    to_extract = eligible_records(records, resumed_keys, limit)
+    to_extract = eligible_records(records, resumed_keys, limit, only_keys)
 
     tracker = BudgetTracker(cap_usd=cap_usd)
     outcome = ScanOutcome()

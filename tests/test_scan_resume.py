@@ -1,7 +1,7 @@
 import json
 
 from hdd_analyzer.budget import BudgetTracker
-from hdd_analyzer.scan import bill_result, build_candidates, load_resumed_keys
+from hdd_analyzer.scan import bill_result, build_candidates, eligible_records, load_name_only_keys, load_resumed_keys
 
 
 def test_load_resumed_keys_empty_when_no_results_file(tmp_path):
@@ -121,3 +121,50 @@ def test_bill_result_falls_back_to_estimate_only_for_successful_rows():
     bill_result(tracker, result, fallback_chars=400)
 
     assert tracker.spent_usd > 0.0
+
+
+def test_load_name_only_keys_empty_when_no_results_file(tmp_path):
+    assert load_name_only_keys(tmp_path) == set()
+
+
+def test_load_name_only_keys_selects_non_ok_extraction_status(tmp_path):
+    results = tmp_path / "results.jsonl"
+    rows = [
+        {"dedupe_key": "verified", "extraction_status": "ok"},
+        {"dedupe_key": "name-only", "extraction_status": "unsupported"},
+        {"dedupe_key": "legacy"},  # missing field entirely
+    ]
+    results.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    assert load_name_only_keys(tmp_path) == {"name-only", "legacy"}
+
+
+def test_load_name_only_keys_uses_latest_row_per_dedupe_key(tmp_path):
+    results = tmp_path / "results.jsonl"
+    rows = [
+        {"dedupe_key": "k", "extraction_status": "unsupported"},
+        {"dedupe_key": "k", "extraction_status": "ok"},
+    ]
+    results.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    assert load_name_only_keys(tmp_path) == set()
+
+
+def test_eligible_records_only_keys_bypasses_resumed_check_for_included_keys():
+    """--only-name-only must re-include a previously-successful row it targets."""
+    records = [{"dedupe_key": "name-only-key", "dup_of": None}]
+    eligible = eligible_records(records, resumed_keys={"name-only-key"}, only_keys={"name-only-key"})
+    assert eligible == records
+
+
+def test_eligible_records_only_keys_excludes_rows_not_in_the_set():
+    records = [
+        {"dedupe_key": "verified", "dup_of": None},
+        {"dedupe_key": "name-only", "dup_of": None},
+    ]
+    eligible = eligible_records(records, resumed_keys=set(), only_keys={"name-only"})
+    assert eligible == [records[1]]
+
+
+def test_eligible_records_only_keys_still_skips_duplicates():
+    records = [{"dedupe_key": "name-only", "dup_of": "some/other/path"}]
+    eligible = eligible_records(records, resumed_keys=set(), only_keys={"name-only"})
+    assert eligible == []
