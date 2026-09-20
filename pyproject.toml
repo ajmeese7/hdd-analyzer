@@ -11,6 +11,7 @@ dependencies = [
     "chardet>=7.6.0",
     "httpx>=0.28.1",
     "pypdf>=6.19.0",
+    "pypdfium2>=5.13.0",
     "python-dotenv>=1.2.3",
     "typesafe-sdk>=0.7.0",
 ]
