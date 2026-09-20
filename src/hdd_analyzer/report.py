@@ -1,4 +1,4 @@
-"""Report stage: rank results and render report.md + report.csv."""
+"""Report stage: rank results and render report.md + report.csv (report.html lives in report_html)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,9 @@ from hdd_analyzer.paths import pure_path
 NOUL_CATEGORIES = ("credentials", "personal", "financial_legal", "original_work", "irreplaceable")
 DEFAULT_TOP_N = 25
 MIN_PROB_DEFAULT = 0.6
+# Value floor for a row to count as "notable" in report.html; matches the
+# manifest's default so the tree shows what `manifest` would salvage.
+MIN_VALUE_DEFAULT = 2.0
 MAX_PER_DIR = 3
 
 
@@ -273,15 +276,20 @@ def write_report_csv(results: list[dict[str, Any]], csv_path: Path) -> None:
 
 
 def generate_report(run_dir: Path, top_n: int = DEFAULT_TOP_N, min_prob: float = MIN_PROB_DEFAULT) -> tuple[Path, Path]:
+    """Write report.md and report.csv. report.html is report_html.write_report_html."""
     results = load_results(run_dir)
     dedupe_savings = load_dedupe_savings(run_dir)
-    spend_usd = sum(_estimated_row_cost(r) for r in results)
+    spend_usd = estimated_spend(results)
 
     md_path = run_dir / "report.md"
     csv_path = run_dir / "report.csv"
     md_path.write_text(render_report_md(results, dedupe_savings, spend_usd, top_n, min_prob), encoding="utf-8")
     write_report_csv(results, csv_path)
     return md_path, csv_path
+
+
+def estimated_spend(results: list[dict[str, Any]]) -> float:
+    return sum(_estimated_row_cost(r) for r in results)
 
 
 def _estimated_row_cost(row: dict[str, Any]) -> float:

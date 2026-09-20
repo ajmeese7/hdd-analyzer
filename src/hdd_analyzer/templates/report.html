@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hdd-analyzer report</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --border: rgba(11, 11, 11, 0.10);
+    --accent: #2a78d6;
+    --heat-track: #cde2fb;
+    --heat-fill: #256abf;
+    --critical: #d03b3b;
+    --critical-wash: rgba(208, 59, 59, 0.10);
+    --selected: rgba(42, 120, 214, 0.10);
+    --hover: rgba(11, 11, 11, 0.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --border: rgba(255, 255, 255, 0.10);
+      --accent: #3987e5;
+      --heat-track: #184f95;
+      --heat-fill: #6da7ec;
+      --critical: #e66767;
+      --critical-wash: rgba(230, 103, 103, 0.14);
+      --selected: rgba(57, 135, 229, 0.16);
+      --hover: rgba(255, 255, 255, 0.05);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header { padding: 20px 24px 8px; }
+  h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
+  h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+  .sub { color: var(--ink-2); }
+  .sub code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  main { padding: 8px 24px 40px; display: grid; gap: 20px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .tile .label { color: var(--ink-2); font-size: 12.5px; }
+  .tile .value { font-size: 26px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
+  .tile .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  /* Icons live in ::before with a margin: a space inside content right after a hex
+     escape ("\26A0 ") is eaten as the escape terminator, so it never renders. */
+  .tile.critical .value::before { content: "\26A0\FE0E"; color: var(--critical); font-size: 18px; vertical-align: 2px; margin-right: 6px; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 0; }
+  .panel.sticky { position: sticky; top: 16px; align-self: start; max-height: calc(100vh - 32px); overflow: auto; }
+  .grid-2 { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 20px; }
+  @media (max-width: 1100px) { .grid-2 { grid-template-columns: 1fr; } }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .num { font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  button {
+    font: inherit; color: var(--ink-2); background: transparent; border: 1px solid var(--border);
+    border-radius: 6px; padding: 3px 9px; cursor: pointer;
+  }
+  button:hover { background: var(--hover); }
+  button.link { border: 0; padding: 0 4px; color: var(--accent); }
+  input, select {
+    font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px;
+  }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .toolbar input[type=search] { flex: 1 1 220px; min-width: 160px; }
+
+  /* Focus list: one series, horizontal bars, no legend needed. */
+  .focus { display: grid; grid-template-columns: minmax(0, 1fr) 90px; gap: 4px 12px; align-items: center; }
+  .focus .row { display: contents; }
+  .focus .path { cursor: pointer; padding: 3px 6px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .focus .path:hover { background: var(--hover); }
+  .focus .bar { height: 14px; display: flex; align-items: center; gap: 6px; }
+  .focus .bar i { display: block; height: 14px; background: var(--accent); border-radius: 0 4px 4px 0; min-width: 2px; }
+
+  /* Tree */
+  .tree ul { list-style: none; margin: 0; padding-left: 18px; }
+  .tree > ul { padding-left: 0; }
+  .node { display: flex; align-items: center; gap: 6px; padding: 2px 6px; border-radius: 4px; cursor: pointer; min-width: 0; }
+  .node:hover { background: var(--hover); }
+  .node.selected { background: var(--selected); }
+  .caret { width: 14px; flex: none; color: var(--muted); font-size: 11px; text-align: center; user-select: none; }
+  .caret.leaf { visibility: hidden; }
+  .node .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node.more { color: var(--accent); font-size: 12.5px; }
+  .node .counts { color: var(--ink-2); font-size: 12px; white-space: nowrap; }
+  .heat { flex: none; width: 60px; height: 6px; border-radius: 3px; background: var(--heat-track); overflow: hidden; }
+  .heat i { display: block; height: 100%; background: var(--heat-fill); min-width: 2px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; flex: none; }
+  .chip { font-size: 11px; padding: 0 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--ink-2); white-space: nowrap; }
+  .chip.credentials { border-color: var(--critical); color: var(--ink); background: var(--critical-wash); }
+  .chip.credentials::before { content: "\26A0\FE0E"; color: var(--critical); margin-right: 4px; }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th { color: var(--ink-2); font-weight: 500; font-size: 12.5px; white-space: nowrap; user-select: none; }
+  th.sortable { cursor: pointer; }
+  th.sortable:hover { color: var(--ink); }
+  th .dir { color: var(--accent); }
+  td.num, td .cat, td .badge { white-space: nowrap; }
+  td.path { word-break: break-all; }
+  td.path .d { color: var(--muted); }
+  td.path .n { font-weight: 500; }
+  tr:hover td { background: var(--hover); }
+  .badge { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--ink-2); white-space: nowrap; }
+  .badge::before { margin-right: 4px; }
+  .badge.content::before { content: "\2713"; }
+  .badge.ocr::before { content: "\25D0"; }
+  .badge.name-only::before { content: "?"; }
+  .badge.unknown::before { content: "\00B7"; }
+  .cat.credentials { color: var(--ink); }
+  .cat.credentials::before { content: "\26A0\FE0E"; color: var(--critical); margin-right: 4px; }
+  .copy { opacity: 0; }
+  tr:hover .copy, .node:hover .copy { opacity: 1; }
+  .empty { color: var(--muted); padding: 12px 0; }
+  .detail-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-bottom: 8px; }
+  .detail-head .mono { word-break: break-all; }
+  footer { padding: 0 24px 24px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">hdd-analyzer report</h1>
+  <div class="sub" id="subtitle"></div>
+</header>
+<main>
+  <section class="tiles" id="tiles"></section>
+
+  <section class="grid-2">
+    <div class="panel">
+      <h2>Where to focus</h2>
+      <p class="sub" style="margin:0 0 10px">Directories holding the most notable files directly, relative to <span class="mono" id="root-path"></span>. Click one to open it in the tree.</p>
+      <div class="focus" id="focus"></div>
+    </div>
+    <div class="panel">
+      <h2>Notable files by category</h2>
+      <p class="sub" style="margin:0 0 10px">Files at or above the probability threshold in each category. A file can count in several.</p>
+      <table id="cat-table"><thead><tr><th>category</th><th class="num">files</th><th class="num">content-verified</th><th class="num">name-only</th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <div class="panel">
+      <div class="toolbar">
+        <h2 style="margin:0;flex:1">Directory tree</h2>
+        <button id="expand-all">Expand all</button>
+        <button id="collapse-all">Collapse all</button>
+      </div>
+      <p class="sub" style="margin:0 0 10px">Each directory shows <span class="num">notable / scanned</span> for its whole subtree and its share of all notable files. Only directories with at least one notable file underneath are shown.</p>
+      <div class="tree" id="tree"></div>
+    </div>
+    <div class="panel sticky">
+      <div class="detail-head">
+        <h2 style="margin:0">Directory contents</h2>
+        <label class="sub"><input type="checkbox" id="subtree"> include subdirectories</label>
+      </div>
+      <div id="detail"><div class="empty">Select a directory in the tree.</div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="toolbar">
+      <h2 style="margin:0">All notable files</h2>
+      <input type="search" id="search" placeholder="Filter by path">
+      <select id="filter-cat"><option value="">any category</option></select>
+      <select id="filter-verified">
+        <option value="">any verification</option>
+        <option value="content">content</option>
+        <option value="ocr">ocr</option>
+        <option value="name-only">name-only</option>
+        <option value="unknown">unknown</option>
+      </select>
+      <span class="muted" id="count"></span>
+    </div>
+    <table id="files"><thead></thead><tbody></tbody></table>
+    <div style="margin-top:10px"><button id="more" hidden>Show more</button></div>
+  </section>
+</main>
+<footer>
+  Scores come from Jev's rubric: value is a 0 to 3 scale (worthless, routine, notable, high-value and irreplaceable); category columns are probabilities. "content" means Jev read the file, "ocr" means it read a Tesseract transcription, "name-only" means it only saw the file name.
+</footer>
+
+<script id="data" type="application/json">/*__HDD_ANALYZER_DATA__*/</script>
+<script>
+(function () {
+  "use strict";
+  var DATA = JSON.parse(document.getElementById("data").textContent);
+  var FILES = DATA.files;
+  FILES.forEach(function (f) { f.path = DATA.dirs[f.dir] + f.name; });
+  var CATS = DATA.categories;
+  var MIN_PROB = DATA.thresholds.min_prob;
+  var PAGE = 100;
+  var MAX_CHILDREN = 20;
+  var TOTAL_NOTABLE = DATA.summary.notable || 1;
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      if (k === "class") node.className = attrs[k];
+      else if (k === "text") node.textContent = attrs[k];
+      else if (k === "html") node.innerHTML = attrs[k];
+      else if (k.slice(0, 2) === "on") node.addEventListener(k.slice(2), attrs[k]);
+      else node.setAttribute(k, attrs[k]);
+    });
+    (children || []).forEach(function (c) { if (c) node.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+    return node;
+  }
+  function fmtSize(n) {
+    var units = ["B", "KB", "MB", "GB", "TB"], i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
+  }
+  function fmtInt(n) { return n.toLocaleString(); }
+  function splitPath(p) {
+    var i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
+    return i < 0 ? ["", p] : [p.slice(0, i + 1), p.slice(i + 1)];
+  }
+  function topCategory(f) {
+    var best = null, bestP = -1;
+    CATS.forEach(function (c) { var p = f.probs[c]; if (p !== undefined && p > bestP) { best = c; bestP = p; } });
+    return best ? { name: best, p: bestP } : null;
+  }
+  function copyButton(text) {
+    return el("button", { class: "link copy", title: "Copy path", onclick: function (ev) {
+      ev.stopPropagation();
+      navigator.clipboard.writeText(text).then(function () { ev.target.textContent = "copied"; setTimeout(function () { ev.target.textContent = "copy"; }, 900); });
+    } }, ["copy"]);
+  }
+
+  /* Header and tiles */
+  document.getElementById("title").textContent = "hdd-analyzer report: " + DATA.run;
+  document.getElementById("subtitle").innerHTML =
+    "Generated " + DATA.generated_at + ". Notable = value ≥ <code>" + DATA.thresholds.min_value +
+    "</code> or any category probability ≥ <code>" + MIN_PROB + "</code> (name-only rows only qualify via credentials, financial/legal, or personal).";
+  var S = DATA.summary;
+  var tiles = [
+    ["Files scanned", fmtInt(S.scanned), S.errors ? fmtInt(S.errors) + " errors" : "no errors"],
+    ["Notable files", fmtInt(S.notable), ((S.notable / Math.max(S.scanned, 1)) * 100).toFixed(1) + "% of scanned"],
+    ["Content-verified", fmtInt(S.verified.content + S.verified.ocr), S.verified.ocr ? fmtInt(S.verified.ocr) + " via OCR" : "Jev read the file"],
+    ["Name-only", fmtInt(S.verified["name-only"] + S.verified.unknown), "judged from the filename"],
+    ["Credential hits", fmtInt(S.credential_hits), "rotate anything still valid", S.credential_hits > 0],
+    ["Estimated spend", "$" + S.spend_usd.toFixed(4), fmtInt(S.dedupe_savings) + " duplicates skipped"]
+  ];
+  var tilesEl = document.getElementById("tiles");
+  tiles.forEach(function (t) {
+    tilesEl.appendChild(el("div", { class: "tile" + (t[3] ? " critical" : "") }, [
+      el("div", { class: "label", text: t[0] }), el("div", { class: "value", text: t[1] }), el("div", { class: "note", text: t[2] })
+    ]));
+  });
+
+  /* Category table */
+  var catBody = document.querySelector("#cat-table tbody");
+  CATS.forEach(function (c) {
+    var all = 0, verified = 0;
+    FILES.forEach(function (f) { if ((f.probs[c] || 0) >= MIN_PROB) { all++; if (f.verified === "content" || f.verified === "ocr") verified++; } });
+    catBody.appendChild(el("tr", null, [
+      el("td", { class: "cat " + c, text: c }), el("td", { class: "num", text: fmtInt(all) }),
+      el("td", { class: "num", text: fmtInt(verified) }), el("td", { class: "num", text: fmtInt(all - verified) })
+    ]));
+  });
+
+  /* Tree */
+  var nodeByPath = {};
+  var selectedPath = null;
+  var treeEl = document.getElementById("tree");
+
+  function renderChildren(node, ul, depth) {
+    var kids = node.children;
+    kids.slice(0, MAX_CHILDREN).forEach(function (child) { ul.appendChild(renderNode(child, depth)); });
+    if (kids.length > MAX_CHILDREN) {
+      var more = el("li", null, [el("div", { class: "node more", text: "… " + fmtInt(kids.length - MAX_CHILDREN) + " more directories", onclick: function () {
+        kids.slice(MAX_CHILDREN).forEach(function (child) { ul.insertBefore(renderNode(child, depth), more); });
+        ul.removeChild(more);
+      } })]);
+      ul.appendChild(more);
+    }
+  }
+  function catChips(cats, all) {
+    var chips = el("span", { class: "chips" });
+    CATS.forEach(function (c) {
+      if (!cats[c] || (!all && c !== "credentials")) return;
+      chips.appendChild(el("span", { class: "chip " + c, text: (c === "financial_legal" ? "fin/legal" : c.replace("_", " ")) + " " + fmtInt(cats[c]) }));
+    });
+    return chips;
+  }
+  function renderNode(node, depth) {
+    var li = el("li");
+    var hasKids = node.children.length > 0;
+    var ul = el("ul", { hidden: "" });
+    var caret = el("span", { class: "caret" + (hasKids ? "" : " leaf"), text: "▸" });
+    var row = el("div", { class: "node", title: node.path, onclick: function () { select(node, row); } }, [
+      caret,
+      el("span", { class: "name", text: node.name }),
+      el("span", { class: "counts num", text: fmtInt(node.notable_subtree) + " / " + fmtInt(node.scanned_subtree) }),
+      el("span", { class: "heat", title: ((node.notable_subtree / TOTAL_NOTABLE) * 100).toFixed(1) + "% of notable files" }, [el("i", { style: "width:" + Math.max(2, (node.notable_subtree / TOTAL_NOTABLE) * 100) + "%" })]),
+      catChips(node.cats, false),
+      copyButton(node.path)
+    ]);
+    li.appendChild(row); li.appendChild(ul);
+    var rendered = false;
+    function setOpen(open) {
+      if (!hasKids) return;
+      if (open && !rendered) { renderChildren(node, ul, depth + 1); rendered = true; }
+      ul.hidden = !open;
+      caret.textContent = open ? "▾" : "▸";
+    }
+    caret.addEventListener("click", function (ev) { ev.stopPropagation(); setOpen(ul.hidden); });
+    nodeByPath[node.path] = { node: node, row: row, setOpen: setOpen, li: li };
+    if (depth < 2) setOpen(true);
+    return li;
+  }
+  var rootUl = el("ul");
+  DATA.tree.forEach(function (root) { rootUl.appendChild(renderNode(root, 0)); });
+  treeEl.appendChild(rootUl);
+  if (!DATA.tree.length) treeEl.appendChild(el("div", { class: "empty", text: "No notable files at these thresholds." }));
+
+  function walk(nodes, fn) { nodes.forEach(function (n) { fn(n); walk(n.children, fn); }); }
+  document.getElementById("expand-all").addEventListener("click", function () { walk(DATA.tree, function (n) { nodeByPath[n.path].setOpen(true); }); });
+  document.getElementById("collapse-all").addEventListener("click", function () { walk(DATA.tree, function (n) { var e = nodeByPath[n.path]; if (e) e.setOpen(false); }); });
+
+  function select(node, row) {
+    if (selectedPath && nodeByPath[selectedPath]) nodeByPath[selectedPath].row.classList.remove("selected");
+    selectedPath = node.path;
+    row.classList.add("selected");
+    renderDetail();
+  }
+  function subtreeFiles(node, out) {
+    node.files.forEach(function (i) { out.push(FILES[i]); });
+    node.children.forEach(function (c) { subtreeFiles(c, out); });
+    return out;
+  }
+  function renderDetail() {
+    var detail = document.getElementById("detail");
+    detail.innerHTML = "";
+    if (!selectedPath) return;
+    var node = nodeByPath[selectedPath].node;
+    var includeSub = document.getElementById("subtree").checked;
+    var rows = includeSub ? subtreeFiles(node, []).sort(function (a, b) { return b.value - a.value; }) : node.files.map(function (i) { return FILES[i]; });
+    detail.appendChild(el("div", { class: "detail-head" }, [
+      el("span", { class: "mono", text: node.path }), copyButton(node.path),
+      el("span", { class: "muted", text: fmtInt(rows.length) + " notable, " + fmtInt(includeSub ? node.scanned_subtree : node.scanned) + " scanned, " + fmtSize(node.bytes_subtree) + " notable in subtree" })
+    ]));
+    detail.appendChild(el("div", { class: "detail-head" }, [el("span", { class: "muted", text: "subtree:" }), catChips(node.cats, true)]));
+    if (!rows.length) { detail.appendChild(el("div", { class: "empty", text: "No notable files directly here; open a subdirectory or include subdirectories." })); return; }
+    var table = el("table", null, [el("thead", null, [el("tr", null, [
+      el("th", { text: "value" }), el("th", { text: "category" }), el("th", { text: "verified" }), el("th", { text: "size" }), el("th", { text: includeSub ? "path" : "file" })
+    ])])]);
+    var body = el("tbody");
+    rows.slice(0, 300).forEach(function (f) { body.appendChild(fileRow(f, includeSub ? relPath(f.path, node.path) : f.name)); });
+    table.appendChild(body);
+    detail.appendChild(table);
+    if (rows.length > 300) detail.appendChild(el("div", { class: "muted", text: "Showing 300 of " + fmtInt(rows.length) + "; use the table below for the rest." }));
+  }
+  function isUnder(p, base) {
+    if (p.indexOf(base) !== 0) return false;
+    var last = base.charAt(base.length - 1), next = p.charAt(base.length);
+    return last === "\\" || last === "/" || next === "\\" || next === "/";
+  }
+  function relPath(p, base) { return isUnder(p, base) ? p.slice(base.length).replace(/^[\\/]/, "") : p; }
+  document.getElementById("subtree").addEventListener("change", renderDetail);
+
+  function fileRow(f, displayName) {
+    var top = topCategory(f);
+    var parts = displayName === undefined ? splitPath(f.path) : splitPath(displayName);
+    return el("tr", null, [
+      el("td", { class: "num", title: "confidence " + f.confidence.toFixed(2), text: f.value.toFixed(2) }),
+      el("td", null, [top ? el("span", { class: "cat " + top.name, text: top.name + " " + top.p.toFixed(2) }) : el("span", { class: "muted", text: "-" })]),
+      el("td", null, [el("span", { class: "badge " + f.verified, text: f.verified })]),
+      el("td", { class: "num", text: fmtSize(f.size) }),
+      el("td", { class: "path mono" }, [el("span", { class: "d", text: parts[0] }), el("span", { class: "n", text: parts[1] }), " ", copyButton(f.path)])
+    ]);
+  }
+
+  /* Focus list: click jumps to the tree node. */
+  var focusEl = document.getElementById("focus");
+  var maxCount = DATA.top_dirs.length ? DATA.top_dirs[0].count : 1;
+  var rootPath = DATA.tree.length === 1 ? DATA.tree[0].path : "";
+  document.getElementById("root-path").textContent = rootPath || "the drive root";
+  DATA.top_dirs.forEach(function (d) {
+    var label = rootPath && d.path === rootPath ? "." : (rootPath ? relPath(d.path, rootPath) : d.path);
+    focusEl.appendChild(el("div", { class: "path mono", title: d.path, text: label, onclick: function () { reveal(d.path, true); } }));
+    focusEl.appendChild(el("div", { class: "bar" }, [el("i", { style: "width:" + Math.max(2, (d.count / maxCount) * 70) + "%" }), el("span", { class: "num muted", text: fmtInt(d.count) })]));
+  });
+  if (!DATA.top_dirs.length) focusEl.appendChild(el("div", { class: "empty", text: "Nothing notable." }));
+  function reveal(path, scroll) {
+    /* Chain collapsing means the node's recorded path is the deepest in the chain; walk up until one matches. */
+    var chain = [];
+    walk(DATA.tree, function (n) { if (path === n.path || isUnder(path, n.path)) chain.push(n); });
+    chain.sort(function (a, b) { return a.path.length - b.path.length; });
+    var target = null;
+    chain.forEach(function (n) { if (n.path === path) target = n; });
+    if (!target) return;
+    chain.forEach(function (n) { if (n.path.length < path.length) nodeByPath[n.path].setOpen(true); });
+    var entry = nodeByPath[target.path];
+    select(target, entry.row);
+    if (scroll) entry.row.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+  if (DATA.top_dirs.length) reveal(DATA.top_dirs[0].path, false);
+
+  /* Ranked table with filters, sorting, and paging. */
+  var filterCat = document.getElementById("filter-cat");
+  CATS.forEach(function (c) { filterCat.appendChild(el("option", { value: c, text: c })); });
+  var sortKey = "value", sortDir = -1, shown = PAGE, filtered = [];
+  var COLUMNS = [["value", "value"], ["", "category"], ["verified", "verified"], ["size", "size"], ["path", "path"]];
+  function renderHead() {
+    var head = document.querySelector("#files thead");
+    head.innerHTML = "";
+    var tr = el("tr");
+    COLUMNS.forEach(function (c) {
+      var key = c[0], label = c[1];
+      if (filterCat.value && label === "category") { key = "cat"; label = filterCat.value + " probability"; }
+      var th = el("th", { class: key ? "sortable" : "", text: label });
+      if (key) {
+        if (sortKey === key) th.appendChild(el("span", { class: "dir", text: sortDir < 0 ? " ▾" : " ▴" }));
+        th.addEventListener("click", function () { if (sortKey === key) sortDir = -sortDir; else { sortKey = key; sortDir = key === "path" ? 1 : -1; } applyFilters(); });
+      }
+      tr.appendChild(th);
+    });
+    head.appendChild(tr);
+  }
+  function applyFilters() {
+    var q = document.getElementById("search").value.toLowerCase();
+    var cat = filterCat.value;
+    var ver = document.getElementById("filter-verified").value;
+    filtered = FILES.filter(function (f) {
+      if (q && f.path.toLowerCase().indexOf(q) < 0) return false;
+      if (cat && (f.probs[cat] || 0) < MIN_PROB) return false;
+      if (ver && f.verified !== ver) return false;
+      return true;
+    });
+    var keyFn = { value: function (f) { return f.value; }, size: function (f) { return f.size; }, path: function (f) { return f.path.toLowerCase(); },
+                  verified: function (f) { return f.verified; }, cat: function (f) { return f.probs[cat] || 0; } }[sortKey];
+    filtered.sort(function (a, b) { var x = keyFn(a), y = keyFn(b); return (x < y ? -1 : x > y ? 1 : 0) * sortDir || b.value - a.value; });
+    shown = PAGE;
+    renderHead();
+    renderRows();
+  }
+  function renderRows() {
+    var body = document.querySelector("#files tbody");
+    body.innerHTML = "";
+    filtered.slice(0, shown).forEach(function (f) { body.appendChild(fileRow(f)); });
+    document.getElementById("count").textContent = fmtInt(Math.min(shown, filtered.length)) + " of " + fmtInt(filtered.length);
+    document.getElementById("more").hidden = shown >= filtered.length;
+  }
+  document.getElementById("more").addEventListener("click", function () { shown += PAGE; renderRows(); });
+  ["search", "filter-cat", "filter-verified"].forEach(function (id) { document.getElementById(id).addEventListener("input", applyFilters); });
+  applyFilters();
+})();
+</script>
+</body>
+</html>

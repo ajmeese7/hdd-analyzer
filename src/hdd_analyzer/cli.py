@@ -14,12 +14,13 @@ from hdd_analyzer import annotate as annotate_mod
 from hdd_analyzer import manifest as manifest_mod
 from hdd_analyzer import ocr as ocr_mod
 from hdd_analyzer import report as report_mod
+from hdd_analyzer import report_html as report_html_mod
 from hdd_analyzer import scan as scan_mod
 from hdd_analyzer import walker
 from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY
 from hdd_analyzer.manifest import MANIFEST_DEFAULT_MIN_PROB, MANIFEST_DEFAULT_MIN_VALUE
 from hdd_analyzer.ocr import OCR_DEFAULT_MIN_VALUE, OCR_DEFAULT_TOP_N
-from hdd_analyzer.report import DEFAULT_TOP_N, MIN_PROB_DEFAULT
+from hdd_analyzer.report import DEFAULT_TOP_N, MIN_PROB_DEFAULT, MIN_VALUE_DEFAULT
 
 RUNS_DIR = Path("runs")
 
@@ -192,9 +193,14 @@ def _cmd_manifest(args: argparse.Namespace) -> int:
 
 def _cmd_report(args: argparse.Namespace) -> int:
     run_dir = _run_dir(args.run)
-    md_path, csv_path = report_mod.generate_report(run_dir, top_n=args.top, min_prob=args.min_prob)
-    print(f"wrote {md_path}")
-    print(f"wrote {csv_path}")
+    try:
+        md_path, csv_path = report_mod.generate_report(run_dir, top_n=args.top, min_prob=args.min_prob)
+        html_path = report_html_mod.write_report_html(run_dir, min_value=args.min_value, min_prob=args.min_prob)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    for path in (md_path, csv_path, html_path):
+        print(f"wrote {path}")
     return 0
 
 
@@ -261,11 +267,19 @@ def build_parser() -> argparse.ArgumentParser:
     ocr_parser.add_argument("--limit", type=int, default=None, help="Cap the total number of files OCR'd.")
     ocr_parser.set_defaults(func=_cmd_ocr)
 
-    report_parser = subparsers.add_parser("report", help="Render report.md and report.csv from scan results.")
+    report_parser = subparsers.add_parser(
+        "report", help="Render report.md, report.csv, and report.html from scan results."
+    )
     report_parser.add_argument("--run", required=True, help="Run name.")
-    report_parser.add_argument("--top", type=int, default=DEFAULT_TOP_N, help="Overall top-N table size.")
+    report_parser.add_argument("--top", type=int, default=DEFAULT_TOP_N, help="Overall top-N table size (Markdown).")
     report_parser.add_argument(
         "--min-prob", type=float, default=MIN_PROB_DEFAULT, help="Per-category probability threshold."
+    )
+    report_parser.add_argument(
+        "--min-value",
+        type=float,
+        default=MIN_VALUE_DEFAULT,
+        help="Minimum value_score for a file to be embedded in report.html as notable.",
     )
     report_parser.set_defaults(func=_cmd_report)
 
