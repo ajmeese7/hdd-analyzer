@@ -15,6 +15,7 @@ Purpose: triage old hard drives for semantically valuable files using TypeSafe's
 - `ocr --run NAME [--top N] [--all] [--min-value V] [--limit N]` -> local, free, zero-API-call OCR pass over an existing run's `results.jsonl`. Selects name-only image rows and name-only PDF rows whose extraction found no text, runs Tesseract on a thread pool, and writes `runs/NAME/ocr.jsonl`. See the OCR stage section below.
 - `report --run NAME [--top N] [--min-prob P]` -> `runs/NAME/report.md` + `report.csv`, ranked per category and overall.
 - `annotate --run NAME [--all] [--top N] [--min-prob P]` -> backfills `metadata_only`/`extraction_status` on `results.jsonl` rows that predate the fields entirely (zero API calls). Never overwrites a row that already has a stored scan-time status, since the report's "verified" column must reflect what Jev actually saw, not what extraction can do today; instead it lists such rows separately as re-scan candidates when today's extraction would now succeed. By default only report-surfaced rows are checked; `--all` covers every row.
+- `manifest --run NAME [--min-value V] [--min-prob P] [--out DIR]` -> the salvage deliverable: read-only over `results.jsonl`/`inventory.jsonl` (never writes either), writes `runs/NAME/manifest/` (or `--out`) with copy lists and summaries. See the Manifest stage section below.
 
 ## Walk stage (deterministic, free)
 
@@ -245,8 +246,50 @@ subsection: once a parent directory contributes more than 3 rows to a table,
 the highest-ranked row is kept and the rest collapse into one `... and N
 more in <dir>` line, so a directory of 50 game saves cannot flood a table.
 
+## Manifest stage (salvage list, read-only)
+
+The final deliverable for a drive is "salvage list to copy off, then wipe."
+`manifest.py` only reads `results.jsonl` (via `report.load_results`, so it
+never duplicates the latest-row-per-key logic) and `inventory.jsonl`; it
+never writes either.
+
+Selection (`is_manifest_included`, defaults `--min-value 2.0`, `--min-prob
+0.7`): a row is excluded outright if it has an `error` or its category is
+`generated`. A content-verified or OCR-verified row (`verified_label` in
+`content`/`ocr`) is included if its `value_score >= min-value` OR any single
+category probability `>= min-prob`. A name-only (or legacy `unknown`) row is
+trusted far less: it is included only if its probability for `credentials`,
+`financial_legal`, or `personal` is `>= min-prob`, never through
+`value_score` alone and never through the other two categories
+(`original_work`, `irreplaceable`), since a suggestive filename is real
+signal for "this might be a password file" but not for "this might be a
+unique file," e.g. a name-only-judged game save should not make the cut.
+
+Output, written to `runs/NAME/manifest/` (or `--out`):
+
+- `copy-list.txt`, `copy-list-verified.txt`, `copy-list-name-only.txt`: one
+  absolute source path per line, plain (not extended-length) form, sorted by
+  (parent directory, filename) so a copy tool's batching stays sane. UNC
+  paths (`\\wsl.localhost\...`) pass through unchanged; robocopy accepts
+  them directly.
+- `credentials.md`: every row (from the full result set, not just the
+  included manifest) scoring `>= 0.6` on `credentials`, sorted descending,
+  columns probability/verified/size/path, paths only, with a header warning
+  to treat these as compromised if the drive ever left custody and to
+  rotate anything still valid.
+- `by-category.md`: a table per Noul category of included rows scoring
+  `>= min-prob` in that category, using `report.collapse_siblings` so a
+  single flooded directory doesn't dominate a table, followed by a top-30
+  directory rollup (by count of included files) so a whole folder worth
+  copying wholesale (an Obsidian vault, a Documents tree) is obvious without
+  reading every row.
+- `summary.txt`: total/verified/name-only counts, per-category counts, total
+  bytes to copy (human-readable), and a documented robocopy invocation shape
+  for driving `copy-list.txt` (grouping by source directory, since robocopy
+  copies one source directory to one destination directory per invocation).
+
 ## Layout
 
-hdd_analyzer/{__init__.py, cli.py (argparse), config.py, walker.py, extract.py, jev.py, jev_provider.py, scan.py, ocr.py, report.py, annotate.py, paths.py}
-tests/ for pure logic only (skip rules, categorization, excerpt sanitization, budget accounting, OCR selection/resolution). No mocks, no network, no tesseract invocation in tests.
+hdd_analyzer/{__init__.py, cli.py (argparse), config.py, walker.py, extract.py, jev.py, jev_provider.py, scan.py, ocr.py, report.py, annotate.py, manifest.py, paths.py}
+tests/ for pure logic only (skip rules, categorization, excerpt sanitization, budget accounting, OCR selection/resolution, manifest selection/rollup). No mocks, no network, no tesseract invocation in tests.
 Console script: `hdd-analyzer = hdd_analyzer.cli:main` in pyproject.

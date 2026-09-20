@@ -11,11 +11,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from hdd_analyzer import annotate as annotate_mod
+from hdd_analyzer import manifest as manifest_mod
 from hdd_analyzer import ocr as ocr_mod
 from hdd_analyzer import report as report_mod
 from hdd_analyzer import scan as scan_mod
 from hdd_analyzer import walker
 from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY
+from hdd_analyzer.manifest import MANIFEST_DEFAULT_MIN_PROB, MANIFEST_DEFAULT_MIN_VALUE
 from hdd_analyzer.ocr import OCR_DEFAULT_MIN_VALUE, OCR_DEFAULT_TOP_N
 from hdd_analyzer.report import DEFAULT_TOP_N, MIN_PROB_DEFAULT
 
@@ -170,6 +172,24 @@ def _cmd_ocr(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_manifest(args: argparse.Namespace) -> int:
+    run_dir = _run_dir(args.run)
+    out_dir = Path(args.out) if args.out else run_dir / "manifest"
+
+    try:
+        outcome = manifest_mod.generate_manifest(
+            run_dir, out_dir=out_dir, min_value=args.min_value, min_prob=args.min_prob
+        )
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"included: {outcome.total} (verified: {outcome.verified}, name-only: {outcome.name_only})")
+    print(f"total bytes to copy: {outcome.total_bytes:,}")
+    print(f"wrote {outcome.out_dir}")
+    return 0
+
+
 def _cmd_report(args: argparse.Namespace) -> int:
     run_dir = _run_dir(args.run)
     md_path, csv_path = report_mod.generate_report(run_dir, top_n=args.top, min_prob=args.min_prob)
@@ -248,6 +268,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-prob", type=float, default=MIN_PROB_DEFAULT, help="Per-category probability threshold."
     )
     report_parser.set_defaults(func=_cmd_report)
+
+    manifest_parser = subparsers.add_parser(
+        "manifest", help="Build a salvage copy list and summaries. Read-only over results.jsonl/inventory.jsonl."
+    )
+    manifest_parser.add_argument("--run", required=True, help="Run name.")
+    manifest_parser.add_argument(
+        "--min-value", type=float, default=MANIFEST_DEFAULT_MIN_VALUE, help="Minimum value_score for inclusion."
+    )
+    manifest_parser.add_argument(
+        "--min-prob", type=float, default=MANIFEST_DEFAULT_MIN_PROB, help="Minimum category probability for inclusion."
+    )
+    manifest_parser.add_argument(
+        "--out", default=None, help="Output directory. Defaults to runs/NAME/manifest."
+    )
+    manifest_parser.set_defaults(func=_cmd_manifest)
 
     return parser
 

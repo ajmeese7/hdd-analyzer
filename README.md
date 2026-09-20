@@ -41,6 +41,24 @@ and produces a ranked report so a human can decide what's worth keeping.
    rest of `runs/`; never print it verbatim. `scan --from-ocr` re-classifies
    the rows OCR recovered content for, using the OCR excerpt in place of
    extraction (`extraction_status: "ocr"` in the results and report).
+7. `manifest` - the final deliverable: a salvage list of what to copy off the
+   drive before it is wiped. Read-only over `results.jsonl`/`inventory.jsonl`,
+   never writes them. Writes into `runs/NAME/manifest/`:
+   `copy-list.txt` (one absolute source path per line, sorted by directory,
+   UNC paths like `\\wsl.localhost\...` left unchanged since robocopy accepts
+   them directly), `copy-list-verified.txt` and `copy-list-name-only.txt`
+   (the same list split by whether Jev actually read the content or judged
+   it from the filename), `credentials.md` (every row scoring >= 0.6 on
+   credentials, paths only, with a warning to rotate anything still valid),
+   `by-category.md` (a table per category plus a top-30 directory rollup so
+   whole folders, e.g. an Obsidian vault, are obviously worth copying
+   wholesale), and `summary.txt` (counts, total bytes, and a documented
+   robocopy example for driving the copy list). A file is included if its
+   value_score or any category probability clears the thresholds when
+   content-verified (or OCR-verified); a name-only row is only included if
+   it scores high on credentials, financial_legal, or personal, since a
+   suggestive filename is real signal there but not for, say, a name-only
+   "irreplaceable" game save.
 
 ## Setup
 
@@ -101,6 +119,12 @@ No API spend; only needs Tesseract installed (see Setup above).
 uv run hdd-analyzer ocr --run winbox
 uv run hdd-analyzer scan --run winbox --from-ocr --cap 0.25
 uv run hdd-analyzer report --run winbox
+```
+
+### Build the salvage manifest before wiping a drive
+
+```
+uv run hdd-analyzer manifest --run winbox
 ```
 
 ## Safety
