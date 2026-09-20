@@ -27,3 +27,12 @@ uv run hdd-analyzer walk F:/Users/ajmee --run f-users
 uv run hdd-analyzer walk //wsl.localhost/Ubuntu/mnt/wsl/PHYSICALDRIVE4p2/home/ajmeese7 --run wsl-home
 uv run hdd-analyzer estimate --run f-users
 ```
+
+Re-classify only the rows that were judged by filename alone (cheap, targeted):
+
+```
+uv run hdd-analyzer scan --run f-users --only-name-only --cap 0.25
+uv run hdd-analyzer scan --run wsl-home --only-name-only --cap 0.25
+uv run hdd-analyzer report --run f-users
+uv run hdd-analyzer report --run wsl-home
+```
