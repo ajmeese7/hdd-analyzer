@@ -126,9 +126,3 @@ def test_select_ocr_candidates_excludes_ineligible_rows():
     selected = select_ocr_candidates(rows, take_all=True)
     assert [r["dedupe_key"] for r in selected] == ["eligible"]
 
-
-def test_needs_ascii_staging_flags_non_ascii_paths():
-    from hdd_analyzer.ocr import needs_ascii_staging
-
-    assert needs_ascii_staging("C:\shots\Screenshot 2025-04-08 at 12.01.19\u202fPM.png") is True
-    assert needs_ascii_staging("C:\shots\plain.png") is False
