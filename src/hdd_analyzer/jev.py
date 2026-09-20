@@ -36,10 +36,17 @@ NOULS: dict[str, Noul] = {
         },
     ),
     "irreplaceable": Noul(
-        instructions="Is this unlikely to be re-downloadable or regenerable from the internet?",
+        instructions="Is this genuinely unique, human-created or human-received content that could not be recreated?",
         criteria={
-            "true": "Unique to this machine; could not be re-obtained from the internet or regenerated.",
-            "false": "Could be re-downloaded, reinstalled, or regenerated easily.",
+            "true": (
+                "Genuinely unique content the owner created or received: original writing, personal photos, "
+                "correspondence, or hand-authored work with no other copy or source."
+            ),
+            "false": (
+                "Could be re-downloaded, reinstalled, or regenerated, including application-regenerable state such "
+                "as game saves, application caches, or a mail client's local database file that merely indexes mail "
+                "stored elsewhere."
+            ),
         },
     ),
 }
@@ -58,6 +65,16 @@ VALUE_SCORE: dict[str, Score] = {
 
 QUESTIONS: dict[str, Any] = {**NOULS, **VALUE_SCORE}
 
+# Bumped whenever a question's instructions/criteria change meaning. Scores
+# from different rubric versions are not comparable; each result row records
+# the version it was scored under.
+RUBRIC_VERSION = 2
+
+NO_CONTENT_NOTE = (
+    "file content could not be read; only the file name and metadata are available; "
+    "treat the name as weak evidence"
+)
+
 
 def build_state(
     path: str,
@@ -68,15 +85,22 @@ def build_state(
     excerpt: str | None,
     metadata_only: bool,
 ) -> JSONContent:
-    """Build the JSON-serializable state dict sent to Jev for one file."""
+    """Build the JSON-serializable state dict sent to Jev for one file.
+
+    When `metadata_only` is true, Jev is explicitly warned that it is
+    guessing from the file name alone: `content_readable` is set to false
+    and `excerpt` is replaced with a note saying so, rather than silently
+    sending `excerpt: null` and leaving Jev to infer that on its own.
+    """
     return {
         "path": path,
         "name": name,
         "ext": ext,
         "size": size,
         "modified": modified,
-        "excerpt": excerpt,
+        "excerpt": NO_CONTENT_NOTE if metadata_only else excerpt,
         "metadata_only": metadata_only,
+        "content_readable": not metadata_only,
     }
 
 

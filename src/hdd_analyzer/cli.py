@@ -10,6 +10,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from hdd_analyzer import annotate as annotate_mod
 from hdd_analyzer import report as report_mod
 from hdd_analyzer import scan as scan_mod
 from hdd_analyzer import walker
@@ -98,6 +99,17 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_annotate(args: argparse.Namespace) -> int:
+    run_dir = _run_dir(args.run)
+    outcome = annotate_mod.annotate_run(run_dir, all_rows=args.all, top_n=args.top, min_prob=args.min_prob)
+    print(f"considered: {outcome.considered}, updated: {outcome.updated}")
+    if outcome.became_name_only:
+        print(f"revealed as name-only ({len(outcome.became_name_only)}):")
+        for path in outcome.became_name_only:
+            print(f"  {path}")
+    return 0
+
+
 def _cmd_report(args: argparse.Namespace) -> int:
     run_dir = _run_dir(args.run)
     md_path, csv_path = report_mod.generate_report(run_dir, top_n=args.top, min_prob=args.min_prob)
@@ -127,6 +139,17 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--yes", action="store_true", help="Skip interactive confirmation.")
     scan_parser.add_argument("--dry-run", action="store_true", help="Extraction only; zero API calls.")
     scan_parser.set_defaults(func=_cmd_scan)
+
+    annotate_parser = subparsers.add_parser(
+        "annotate", help="Backfill extraction_status/metadata_only onto existing results. Zero API calls."
+    )
+    annotate_parser.add_argument("--run", required=True, help="Run name.")
+    annotate_parser.add_argument("--all", action="store_true", help="Annotate every result row, not just report-surfaced ones.")
+    annotate_parser.add_argument("--top", type=int, default=DEFAULT_TOP_N, help="Overall top-N used to select surfaced rows.")
+    annotate_parser.add_argument(
+        "--min-prob", type=float, default=MIN_PROB_DEFAULT, help="Per-category probability threshold used to select surfaced rows."
+    )
+    annotate_parser.set_defaults(func=_cmd_annotate)
 
     report_parser = subparsers.add_parser("report", help="Render report.md and report.csv from scan results.")
     report_parser.add_argument("--run", required=True, help="Run name.")

@@ -42,9 +42,11 @@ def test_extract_office_xml_skips_oversized_member_without_decompressing(tmp_pat
     with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("word/document.xml", b"<w:t>this is well over ten bytes</w:t>")
 
-    excerpt, metadata_only = extract_excerpt(docx_path, category="doc", ext="docx")
+    excerpt, metadata_only, extraction_status = extract_excerpt(docx_path, category="doc", ext="docx")
 
     assert excerpt is None
+    assert metadata_only is True
+    assert extraction_status == extract_mod.EXTRACTION_STATUS_NO_TEXT
 
 
 def test_extract_office_xml_reads_member_under_cap(tmp_path):
@@ -52,8 +54,41 @@ def test_extract_office_xml_reads_member_under_cap(tmp_path):
     with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("word/document.xml", b"<w:t>hello world</w:t>")
 
-    excerpt, metadata_only = extract_excerpt(docx_path, category="doc", ext="docx")
+    excerpt, metadata_only, extraction_status = extract_excerpt(docx_path, category="doc", ext="docx")
 
     assert excerpt is not None
     assert "hello world" in excerpt
     assert metadata_only is False
+    assert extraction_status == extract_mod.EXTRACTION_STATUS_OK
+
+
+def test_extract_excerpt_unsupported_category_never_tries_content(tmp_path):
+    image_path = tmp_path / "photo.jpg"
+    image_path.write_bytes(b"\xff\xd8\xff")
+
+    excerpt, metadata_only, extraction_status = extract_excerpt(image_path, category="image", ext="jpg")
+
+    assert excerpt is None
+    assert metadata_only is True
+    assert extraction_status == extract_mod.EXTRACTION_STATUS_UNSUPPORTED
+
+
+def test_extract_excerpt_missing_file_is_error_not_no_text(tmp_path):
+    missing = tmp_path / "gone.txt"
+
+    excerpt, metadata_only, extraction_status = extract_excerpt(missing, category="text", ext="txt")
+
+    assert excerpt is None
+    assert metadata_only is True
+    assert extraction_status == extract_mod.EXTRACTION_STATUS_ERROR
+
+
+def test_extract_excerpt_ok_for_readable_text(tmp_path):
+    text_path = tmp_path / "notes.txt"
+    text_path.write_text("hello world", encoding="utf-8")
+
+    excerpt, metadata_only, extraction_status = extract_excerpt(text_path, category="text", ext="txt")
+
+    assert excerpt == "hello world"
+    assert metadata_only is False
+    assert extraction_status == extract_mod.EXTRACTION_STATUS_OK

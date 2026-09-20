@@ -13,8 +13,8 @@ from typesafe_sdk import AsyncTypeSafeClient
 
 from hdd_analyzer.budget import BudgetTracker, estimate_tokens, estimate_worst_case_tokens, tokens_to_cost
 from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY, PER_CALL_OVERHEAD_TOKENS
-from hdd_analyzer.extract import extract_excerpt
-from hdd_analyzer.jev import build_state, classify_file
+from hdd_analyzer.extract import extract_excerpt, extract_excerpt_async
+from hdd_analyzer.jev import RUBRIC_VERSION, build_state, classify_file
 from hdd_analyzer.jev_provider import resolve_async_provider
 
 SYSTEMIC_STATUS_CODES = frozenset({401, 402, 403})
@@ -74,6 +74,7 @@ class ScanCandidate:
     dedupe_key: str
     excerpt: str | None
     metadata_only: bool
+    extraction_status: str
 
 
 def load_inventory(run_dir: Path) -> list[dict[str, Any]]:
@@ -106,31 +107,46 @@ def load_resumed_keys(run_dir: Path) -> set[str]:
     return keys
 
 
-def build_candidates(records: list[dict[str, Any]], resumed_keys: set[str], limit: int | None = None) -> list[ScanCandidate]:
-    """Filter to non-duplicate, unresolved records and run local extraction."""
-    candidates: list[ScanCandidate] = []
+def eligible_records(records: list[dict[str, Any]], resumed_keys: set[str], limit: int | None = None) -> list[dict[str, Any]]:
+    """Filter inventory records to non-duplicate, unresolved candidates, honoring `limit`."""
+    eligible: list[dict[str, Any]] = []
     for record in records:
         if record.get("dup_of") is not None:
             continue
-        key = record["dedupe_key"]
-        if key in resumed_keys:
+        if record["dedupe_key"] in resumed_keys:
             continue
-        if limit is not None and len(candidates) >= limit:
+        if limit is not None and len(eligible) >= limit:
             break
+        eligible.append(record)
+    return eligible
+
+
+def _candidate_from_record(record: dict[str, Any], excerpt: str | None, metadata_only: bool, extraction_status: str) -> ScanCandidate:
+    return ScanCandidate(
+        path=record["path"],
+        size=record["size"],
+        mtime=record["mtime"],
+        ext=record["ext"],
+        category=record["category"],
+        dedupe_key=record["dedupe_key"],
+        excerpt=excerpt,
+        metadata_only=metadata_only,
+        extraction_status=extraction_status,
+    )
+
+
+def build_candidates(records: list[dict[str, Any]], resumed_keys: set[str], limit: int | None = None) -> list[ScanCandidate]:
+    """Filter to non-duplicate, unresolved records and run local extraction, sequentially.
+
+    Used by `estimate_run`, where a simple sequential pass is fine since no
+    API calls are in flight to overlap with. `run_scan` uses the pipelined
+    producer/consumer path instead so extraction IO overlaps API latency.
+    """
+    candidates: list[ScanCandidate] = []
+    for record in eligible_records(records, resumed_keys, limit):
         path = Path(record["path"])
-        excerpt, metadata_only = extract_excerpt(path, record["category"], record["ext"])
-        candidates.append(
-            ScanCandidate(
-                path=record["path"],
-                size=record["size"],
-                mtime=record["mtime"],
-                ext=record["ext"],
-                category=record["category"],
-                dedupe_key=key,
-                excerpt=excerpt,
-                metadata_only=metadata_only,
-            )
-        )
+        excerpt, metadata_only, extraction_status = extract_excerpt(path, record["category"], record["ext"])
+        candidates.append(_candidate_from_record(record, excerpt, metadata_only, extraction_status))
     return candidates
 
 
@@ -214,6 +230,9 @@ async def _classify_one(
         "value_score": value_score,
         "value_confidence": value_confidence,
         "input_tokens": input_tokens,
+        "metadata_only": candidate.metadata_only,
+        "extraction_status": candidate.extraction_status,
+        "rubric_version": RUBRIC_VERSION,
         "error": None,
     }, None
 
@@ -248,6 +267,49 @@ class ScanOutcome:
     aborted_reason: str | None = None
 
 
+async def _extract_worker(input_queue: asyncio.Queue, out_queue: asyncio.Queue) -> None:
+    """Pull records off `input_queue`, extract, push finished candidates to `out_queue`."""
+    while True:
+        try:
+            record = input_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+        path = Path(record["path"])
+        excerpt, metadata_only, extraction_status = await extract_excerpt_async(path, record["category"], record["ext"])
+        await out_queue.put(_candidate_from_record(record, excerpt, metadata_only, extraction_status))
+
+
+async def _run_extraction_pipeline(records: list[dict[str, Any]], out_queue: asyncio.Queue, concurrency: int) -> None:
+    """Extract every record concurrently, then signal completion with a sentinel.
+
+    Runs as its own task alongside the classification consumer, so IO for
+    the next batch overlaps API latency for the current one instead of
+    running entirely upfront.
+    """
+    input_queue: asyncio.Queue = asyncio.Queue()
+    for record in records:
+        input_queue.put_nowait(record)
+
+    workers = [asyncio.create_task(_extract_worker(input_queue, out_queue)) for _ in range(concurrency)]
+    await asyncio.gather(*workers)
+    await out_queue.put(None)
+
+
+async def _next_batch(out_queue: asyncio.Queue, batch_size: int) -> tuple[list[ScanCandidate], bool]:
+    """Collect up to `batch_size` candidates from `out_queue`.
+
+    Returns (batch, extraction_done). extraction_done is True once the
+    producer's sentinel has been consumed, whether or not the batch is full.
+    """
+    batch: list[ScanCandidate] = []
+    while len(batch) < batch_size:
+        item = await out_queue.get()
+        if item is None:
+            return batch, True
+        batch.append(item)
+    return batch, False
+
+
 async def _run_canary(client: AsyncTypeSafeClient, tracker: BudgetTracker) -> BaseException | None:
     """One real call before dispatching candidates; catches a dead key/no credits early."""
     try:
@@ -267,33 +329,45 @@ async def run_scan(
     limit: int | None = None,
     concurrency: int = DEFAULT_CONCURRENCY,
 ) -> ScanOutcome:
-    """Dispatch classification calls for unresolved candidates, batch by batch."""
+    """Dispatch classification calls for unresolved candidates, batch by batch.
+
+    Extraction and classification are pipelined: a producer task extracts
+    records concurrently and feeds finished candidates onto a queue while the
+    consumer loop below classifies whatever batch is ready, so file IO for
+    the next batch overlaps API latency for the current one.
+    """
     records = load_inventory(run_dir)
     resumed_keys = load_resumed_keys(run_dir)
-    candidates = build_candidates(records, resumed_keys, limit)
+    to_extract = eligible_records(records, resumed_keys, limit)
 
     tracker = BudgetTracker(cap_usd=cap_usd)
     outcome = ScanOutcome()
     results_path = run_dir / "results.jsonl"
     semaphore = asyncio.Semaphore(concurrency)
+    out_queue: asyncio.Queue = asyncio.Queue(maxsize=concurrency * 4)
 
     provider = resolve_async_provider(api_key)
     print(f"jev provider: {provider.name} (model={provider.model})")
 
     tracker_state = SystemicErrorTracker()
+    extraction_task = asyncio.create_task(_run_extraction_pipeline(to_extract, out_queue, concurrency))
 
     async with AsyncTypeSafeClient(api_key=api_key, model=provider.model, **provider.client_kwargs) as client:
         canary_exc = await _run_canary(client, tracker)
         if canary_exc is not None and is_systemic_error(canary_exc):
             outcome.aborted_reason = tracker_state.canary_abort_reason(canary_exc)
             print(outcome.aborted_reason, file=sys.stderr)
+            await _cancel_and_wait(extraction_task)
             outcome.spent_usd = tracker.spent_usd
             return outcome
 
         with open(results_path, "a", encoding="utf-8") as out:
-            batch_start = 0
-            while batch_start < len(candidates):
-                batch = candidates[batch_start : batch_start + concurrency]
+            extraction_done = False
+            while not extraction_done:
+                batch, extraction_done = await _next_batch(out_queue, concurrency)
+                if not batch:
+                    break
+
                 worst_case = sum(tokens_to_cost(estimate_candidate_worst_case_tokens(c)) for c in batch)
                 if tracker.would_exceed_cap(worst_case):
                     outcome.stopped_at_cap = True
@@ -323,7 +397,17 @@ async def run_scan(
                 outcome.spent_usd = tracker.spent_usd
                 if aborted:
                     break
-                batch_start += concurrency
 
+    await _cancel_and_wait(extraction_task)
     outcome.spent_usd = tracker.spent_usd
     return outcome
+
+
+async def _cancel_and_wait(task: asyncio.Task) -> None:
+    if task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass

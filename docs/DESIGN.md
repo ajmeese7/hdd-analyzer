@@ -12,7 +12,8 @@ Purpose: triage old hard drives for semantically valuable files using TypeSafe's
 - `walk ROOT --run NAME [--include SUBPATH ...]` -> writes `runs/NAME/inventory.jsonl` + prints summary (counts/bytes by category, skipped counts). No network, no API.
 - `estimate --run NAME` -> token + dollar estimate for a scan of the inventory. No network.
 - `scan --run NAME [--cap USD] [--limit N] [--min-prob P] [--yes] [--dry-run]` -> extraction + Jev calls, appends `runs/NAME/results.jsonl` incrementally (resumable: skips file hashes already present). Prints running spend. Hard-stops at cap (default $5). Prompts with the estimate before spending unless `--yes`. `--dry-run` does extraction only, zero API calls.
-- `report --run NAME [--top N]` -> `runs/NAME/report.md` + `report.csv`, ranked per category and overall.
+- `report --run NAME [--top N] [--min-prob P]` -> `runs/NAME/report.md` + `report.csv`, ranked per category and overall.
+- `annotate --run NAME [--all] [--top N] [--min-prob P]` -> re-runs local extraction (zero API calls) to backfill `metadata_only`/`extraction_status` on existing `results.jsonl` rows. By default only the rows currently surfaced by the report tables are re-extracted; `--all` covers every row. Appends corrected rows, which supersede the originals since `report` keeps only the latest row per dedupe key.
 
 ## Walk stage (deterministic, free)
 
@@ -54,6 +55,29 @@ Tradeoff: two differently-named copies of the same non-text file (or of an overs
 - image/av/archive/binary: no content; judged on metadata only (path, name, size, mtime), marked `metadata_only`.
 - Excerpt hard cap ~6000 chars (~1500 tokens) per file.
 
+### Extraction transparency
+
+Every candidate carries an `extraction_status`, one of: `ok` (content read
+successfully), `no_text` (extraction ran but found nothing, e.g. an
+image-only PDF or an empty decode), `timeout` (the per-file extraction
+timeout fired), `unsupported` (the category is never sent to extraction at
+all: images, audio/video, archives, other binaries), or `error` (extraction
+raised, e.g. the file could not be opened). `metadata_only` is true for
+every status except `ok`. Both fields are written into every result row, so
+a high value_score driven entirely by the file name (Jev guessing from
+`passport.pdf` with no readable content) is visible in results.jsonl and in
+the report, instead of looking identical to a genuinely content-verified
+hit. Extraction is pipelined with classification in `scan` (a producer task
+extracts records on a bounded thread pool while the consumer classifies
+whatever batch is ready), so file IO overlaps API latency rather than
+running entirely upfront; `estimate` keeps the simpler sequential path
+since no API calls are in flight to overlap with.
+
+When `metadata_only` is true, the state sent to Jev also sets
+`content_readable: false` and replaces `excerpt` with an explicit note
+telling Jev the name is weak evidence, rather than silently sending
+`excerpt: null` and leaving Jev to infer that on its own.
+
 ## Jev questions (one system_one call per file, 6 parallel questions)
 
 State: JSON object {path, name, ext, size, modified, excerpt|null, metadata_only: bool}.
@@ -64,7 +88,19 @@ Nouls (each with explicit true/false criteria):
 - original_work: authored source code or creative work (vs downloaded/installed/third-party)
 - irreplaceable: unlikely to be re-downloadable or regenerable from the internet
 Score `value` 0-3: [worthless/system noise, routine, notable, high-value irreplaceable].
-Result row: dedupe key, path, all probabilities, value score + confidence, usage.input_tokens, error (if any).
+Result row: dedupe key, path, all probabilities, value score + confidence, usage.input_tokens, metadata_only, extraction_status, rubric_version, error (if any).
+
+### Rubric versioning
+
+`RUBRIC_VERSION` (in `jev.py`) is bumped whenever a question's
+instructions or criteria change meaning, and every result row records the
+version it was scored under. Rubric changes only affect future scans;
+scores from different rubric versions are not comparable and should not be
+mixed in a single ranking. Version 2 tightened the `irreplaceable` rubric to
+exclude application-regenerable state (game saves, application caches, a
+mail client's local database file that merely indexes mail stored
+elsewhere) and target genuinely unique human-created or human-received
+content instead.
 
 ## Budget + safety
 
@@ -104,8 +140,22 @@ HTTP transport: `OpenRouterTransport` (sync) and `AsyncOpenRouterTransport`
 `AsyncOpenRouterTransport` via `resolve_async_provider`. `scan` prints the
 resolved provider and model at startup.
 
+## Report format
+
+Every table (overall top-N and each category's top-20) carries a `verified`
+column: `content` when `extraction_status == "ok"`, `name-only` otherwise,
+`unknown` for legacy rows written before extraction_status existed. Within
+each table, content-verified rows are listed first, preserving their rank
+among the full ranked set; a clearly separated "Name-only matches
+(unverified)" subsection follows with the remaining rows, rather than
+interleaving a name-only guess between two content-verified hits. Sibling
+collapsing then applies within each subsection: once a parent directory
+contributes more than 3 rows to a table, the highest-ranked row is kept and
+the rest collapse into one `... and N more in <dir>` line, so a directory of
+50 game saves cannot flood a table.
+
 ## Layout
 
-hdd_analyzer/{__init__.py, cli.py (argparse), config.py, walker.py, extract.py, jev.py, scan.py, report.py}
+hdd_analyzer/{__init__.py, cli.py (argparse), config.py, walker.py, extract.py, jev.py, jev_provider.py, scan.py, report.py, annotate.py, paths.py}
 tests/ for pure logic only (skip rules, categorization, excerpt sanitization, budget accounting). No mocks, no network in tests.
 Console script: `hdd-analyzer = hdd_analyzer.cli:main` in pyproject.

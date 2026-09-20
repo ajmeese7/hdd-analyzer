@@ -17,6 +17,17 @@ and produces a ranked report so a human can decide what's worth keeping.
    resumable: re-running skips files whose dedupe key is already recorded.
 4. `report` - ranks the results into `runs/NAME/report.md` (overall top-N plus
    per-category top-20 tables) and `runs/NAME/report.csv` (all rows, flattened).
+   Every row carries a `verified` column: `content` when Jev actually read the
+   file, `name-only` when it only saw the file name and metadata. Content-verified
+   rows are listed first in each table, with name-only matches in their own
+   clearly separated subsection, so a high score driven purely by a suggestive
+   filename (e.g. `passport.pdf` with no extractable text) cannot be mistaken
+   for a verified hit.
+5. `annotate` - backfills `metadata_only`/`extraction_status` onto an existing
+   run's `results.jsonl` by re-running local extraction only, zero API calls.
+   Useful after an extraction bug fix, to correct old results without
+   re-spending on the LLM call. Defaults to only the rows currently surfaced
+   by the report tables; `--all` covers every row.
 
 ## Setup
 
