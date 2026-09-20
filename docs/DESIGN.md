@@ -2,10 +2,7 @@
 
 Purpose: triage old hard drives for semantically valuable files using TypeSafe's Jev (System One model). Pipeline: free deterministic walk -> cost estimate -> Jev classification pass under a hard budget cap -> ranked report for human review.
 
-## Test drives
-
-- Old Windows system drive mounted at `F:\` (value lives mostly under `F:\Users`)
-- Old Linux root filesystem, WSL-mounted, reachable from Windows at `\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE4p2` (value lives mostly under `home/`)
+Target environments: a locally attached or externally mounted Windows drive (e.g. `D:\`), or a Linux/macOS rootfs mounted read-only (including a WSL-mounted rootfs reachable from Windows over UNC, e.g. `\\wsl.localhost\Ubuntu\...`). The walker's skip rules and the manifest's UNC path handling both exist to support this cross-platform, cross-filesystem case.
 
 ## CLI (uv run hdd-analyzer ...)
 
@@ -136,7 +133,7 @@ unquoted or single-quoted -- python-dotenv unescapes `\t` inside
 double-quoted values, which silently turns `\tesseract.exe` into a tab),
 else `tesseract` on PATH, else the winget default install path
 (`C:\Program Files\Tesseract-OCR\tesseract.exe`) if it exists, else a
-`RuntimeError` pointing at `docs/RUNBOOK.md`'s OCR setup section.
+`RuntimeError` pointing at the README's OCR setup section.
 
 Images (`OCR_IMAGE_EXTS`: jpg, jpeg, png, tif, tiff, bmp, webp, gif) are
 OCR'd directly via `tesseract <file> stdout -l eng --psm 3` over stdin/stdout,
@@ -292,4 +289,4 @@ Output, written to `runs/NAME/manifest/` (or `--out`):
 
 hdd_analyzer/{__init__.py, cli.py (argparse), config.py, walker.py, extract.py, jev.py, jev_provider.py, scan.py, ocr.py, report.py, annotate.py, manifest.py, paths.py}
 tests/ for pure logic only (skip rules, categorization, excerpt sanitization, budget accounting, OCR selection/resolution, manifest selection/rollup). No mocks, no network, no tesseract invocation in tests.
-Console script: `hdd-analyzer = hdd_analyzer.cli:main` in pyproject.
+Console script: `hdd-analyzer = hdd_analyzer:main` in pyproject (re-exported from `cli.main`).

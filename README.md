@@ -1,141 +1,131 @@
 # hdd-analyzer
 
-![hdd-analyzer walking a drive, scanning files with an LLM, and ranking the keepers](promo/hdd-analyzer.gif)
+<p align="center">
+  <img src="promo/hdd-analyzer.gif" alt="hdd-analyzer walking a drive, scanning files with an LLM, and ranking the keepers">
+</p>
 
-Use Jev (TypeSafe's System One model) to triage old hard drives for
-semantically valuable files. It walks a drive for free, estimates the token
-and dollar budget for classifying every file, then runs a capped LLM scan
-and produces a ranked report so a human can decide what's worth keeping.
+Old hard drives pile up faster than anyone can manually sort them, and most of what is on them is "dark data": junk, caches, and installers with a handful of genuinely irreplaceable files buried inside. hdd-analyzer walks a drive for free, estimates the token and dollar budget to have [Jev](https://typesafe.ai) (TypeSafe's [System One](https://docs.typesafe.ai/concepts/system-one) decision model, also served through [OpenRouter](https://openrouter.ai/typesafe/jev-1.13)) read every file, then runs a capped classification pass and produces a ranked report so a human can decide what is worth keeping before the drive gets wiped. Cheap, fast inference has made this kind of exhaustive per-file triage practical in a way it was not a few years ago.
 
-## Pipeline
+## What is Jev?
 
-1. `walk` - deterministic, free directory walk. Writes `runs/NAME/inventory.jsonl`
-   (path, size, mtime, extension, category, dedupe key) and a
-   `runs/NAME/walk-errors.log` for anything unreadable. No network calls.
-2. `estimate` - token and dollar estimate for scanning the inventory. No network.
-3. `scan` - local extraction (first bytes of text/code, first pages of PDFs,
-   document.xml/sharedStrings.xml for docx/xlsx) followed by one Jev call per
-   file, under a hard spend cap. Appends to `runs/NAME/results.jsonl` and is
-   resumable: re-running skips files whose dedupe key is already recorded.
-4. `report` - ranks the results into `runs/NAME/report.md` (overall top-N plus
-   per-category top-20 tables) and `runs/NAME/report.csv` (all rows, flattened).
-   Every row carries a `verified` column: `content` when Jev actually read the
-   file, `name-only` when it only saw the file name and metadata. Content-verified
-   rows are listed first in each table, with name-only matches in their own
-   clearly separated subsection, so a high score driven purely by a suggestive
-   filename (e.g. `passport.pdf` with no extractable text) cannot be mistaken
-   for a verified hit.
-5. `annotate` - backfills `metadata_only`/`extraction_status` onto an existing
-   run's `results.jsonl` by re-running local extraction only, zero API calls.
-   Useful after an extraction bug fix, to correct old results without
-   re-spending on the LLM call. Defaults to only the rows currently surfaced
-   by the report tables; `--all` covers every row.
-6. `ocr` - local, free, zero-API-call OCR pass over an existing run. Selects
-   name-only image rows and name-only PDF rows whose extraction found no
-   text (`extraction_status: "no_text"`), runs Tesseract on each, and writes
-   `runs/NAME/ocr.jsonl`. By default OCRs the top 200 eligible rows by
-   `value_score` with `value_score >= 2.0` (the high-ranked filename guesses
-   worth verifying); `--all` OCRs every eligible row, `--limit` caps the
-   total either way. `runs/NAME/ocr.jsonl` holds real file content excerpts
-   (potentially credentials or other PII) and is gitignored along with the
-   rest of `runs/`; never print it verbatim. `scan --from-ocr` re-classifies
-   the rows OCR recovered content for, using the OCR excerpt in place of
-   extraction (`extraction_status: "ocr"` in the results and report).
-7. `manifest` - the final deliverable: a salvage list of what to copy off the
-   drive before it is wiped. Read-only over `results.jsonl`/`inventory.jsonl`,
-   never writes them. Writes into `runs/NAME/manifest/`:
-   `copy-list.txt` (one absolute source path per line, sorted by directory,
-   UNC paths like `\\wsl.localhost\...` left unchanged since robocopy accepts
-   them directly), `copy-list-verified.txt` and `copy-list-name-only.txt`
-   (the same list split by whether Jev actually read the content or judged
-   it from the filename), `credentials.md` (every row scoring >= 0.6 on
-   credentials, paths only, with a warning to rotate anything still valid),
-   `by-category.md` (a table per category plus a top-30 directory rollup so
-   whole folders, e.g. an Obsidian vault, are obviously worth copying
-   wholesale), and `summary.txt` (counts, total bytes, and a documented
-   robocopy example for driving the copy list). A file is included if its
-   value_score or any category probability clears the thresholds when
-   content-verified (or OCR-verified); a name-only row is only included if
-   it scores high on credentials, financial_legal, or personal, since a
-   suggestive filename is real signal there but not for, say, a name-only
-   "irreplaceable" game save.
+Jev is [TypeSafe](https://typesafe.ai)'s System One decision model: instead of free-text generation, it answers a fixed set of yes/no questions (nouls), scored questions, and multiple-choice questions against a piece of state, returning calibrated probabilities instead of prose, which makes it well suited to structured classification like this tool's per-file rubric. hdd-analyzer talks to Jev either directly through TypeSafe's API or through [OpenRouter's Decisions endpoint](https://openrouter.ai/typesafe/jev-1.13), auto-detected from your API key.
 
-## Setup
+## Install
 
-Copy `.env.example` to `.env` and fill in `TYPESAFE_API_KEY`:
+Not yet on PyPI. Install straight from GitHub:
 
 ```
-copy .env.example .env
+pip install git+https://github.com/ajmeese7/hdd-analyzer.git
 ```
 
-`TYPESAFE_API_KEY` accepts either a native TypeSafe key or an OpenRouter key
-(prefix `sk-or-`). OpenRouter keys are routed to OpenRouter's Decisions API
-automatically. Set `JEV_PROVIDER=openrouter` or `JEV_PROVIDER=typesafe` in
-`.env` to override the auto-detection.
+Or with `uv`:
 
-Dependencies are managed with `uv`. Install with:
+```
+uv tool install git+https://github.com/ajmeese7/hdd-analyzer.git
+```
+
+Requires Python 3.13+.
+
+## Configuration
+
+Create a `.env` file in the working directory you'll run `hdd-analyzer` from; it is loaded automatically.
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `TYPESAFE_API_KEY` | yes | Either a native TypeSafe key or an OpenRouter key (prefix `sk-or-`). The provider is auto-detected from the prefix. |
+| `JEV_PROVIDER` | no | `openrouter` or `typesafe`, overrides the key-prefix auto-detection. |
+| `TESSERACT_CMD` | no | Full path to `tesseract.exe` if it is not on PATH. Needed only for the optional `ocr` command. |
+
+```
+TYPESAFE_API_KEY=your-key-here
+```
+
+Do not double-quote `TESSERACT_CMD` in `.env`. `python-dotenv` treats a double-quoted value as an escaped string, so `"\tesseract.exe"` becomes a literal tab followed by `esseract.exe`. Leave it unquoted or single-quoted.
+
+## Quickstart
+
+Everything below assumes an old drive mounted at `D:\` (or `/mnt/olddrive` on Linux/macOS) with the interesting content under `Users`.
+
+```
+hdd-analyzer walk D:\ --run olddrive --include Users
+hdd-analyzer estimate --run olddrive
+hdd-analyzer scan --run olddrive --cap 5
+hdd-analyzer report --run olddrive
+hdd-analyzer manifest --run olddrive
+```
+
+`walk` inventories the drive for free. `estimate` prices out a full scan with no network calls. `scan` extracts local content and sends one classification call per file to Jev, prompting for confirmation and stopping at the cap. `report` renders `runs/olddrive/report.md` and `report.csv`, ranked overall and per category. `manifest` turns the results into a salvage copy list in `runs/olddrive/manifest/`, ready to hand to `robocopy` or `rsync` before the drive is wiped.
+
+## How it stays cheap and safe
+
+- `walk` is a pure filesystem pass: no network calls, no API spend.
+- Duplicate files are deduped by content hash (text/code/doc) or by size and filename (everything else), so Jev never classifies the same file twice.
+- Dependency caches, build output, and other junk directories (`node_modules`, `.git`, `AppData\Local`, and dozens more) are skipped before they ever hit the candidate list.
+- `estimate` and `scan` print the candidate count, estimated tokens, and estimated dollar cost, and `scan` asks for interactive `y` confirmation before spending anything (skip with `--yes`).
+- `scan` enforces a hard spend cap (`--cap`, default $5) before dispatching each batch, using actual spend so far plus a worst-case estimate of the in-flight batch.
+- A preflight canary call and a circuit breaker abort the scan immediately on authentication or billing errors (HTTP 401/403/402), instead of burning through the candidate list on a broken key.
+- `scan` is resumable: re-running it skips files whose dedupe key is already in `results.jsonl`, and failed files retry automatically.
+- Every result is labeled `content` (Jev read the actual file), `ocr` (Jev read a Tesseract transcription), or `name-only` (Jev only saw the file name and metadata), and reports list content-verified hits first so a suggestive filename like `passport.pdf` with no extractable text can't be mistaken for a verified hit.
+- The tool never writes outside its own `runs/` directory, and drives are only ever opened read-only.
+
+## Optional: OCR for images and scanned PDFs
+
+`scan` never runs OCR itself; images and no-text PDFs get judged by Jev on filename alone. The separate `ocr` command is local, free, and makes zero API calls: it revisits an existing run's results, OCRs the highest-ranked name-only images and no-text PDFs with Tesseract, and writes `runs/NAME/ocr.jsonl`. Then `scan --from-ocr` re-classifies those rows using the OCR excerpt instead of re-running extraction.
+
+Install Tesseract first:
+
+```
+winget install UB-Mannheim.TesseractOCR
+```
+
+On Linux or macOS:
+
+```
+sudo apt install tesseract-ocr
+brew install tesseract
+```
+
+Then:
+
+```
+hdd-analyzer ocr --run olddrive
+hdd-analyzer scan --run olddrive --from-ocr --cap 0.25
+hdd-analyzer report --run olddrive
+```
+
+## Commands
+
+- `walk ROOT --run NAME [--include SUBPATH ...]` - free, deterministic inventory walk. Writes `runs/NAME/inventory.jsonl`.
+- `estimate --run NAME` - token and dollar estimate for a scan. No network calls.
+- `scan --run NAME [--cap USD] [--limit N] [--yes] [--dry-run] [--only-name-only] [--exclude-ext EXT[,EXT...]] [--from-ocr]` - local extraction plus one Jev call per file, under a hard spend cap. Appends to `runs/NAME/results.jsonl` and is resumable.
+- `annotate --run NAME [--all] [--top N] [--min-prob P]` - backfills `metadata_only`/`extraction_status` onto existing results by re-running local extraction only, zero API calls.
+- `ocr --run NAME [--top N] [--all] [--min-value V] [--limit N]` - local, free OCR pass over an existing run's name-only image and no-text-PDF rows.
+- `report --run NAME [--top N] [--min-prob P]` - renders `runs/NAME/report.md` and `report.csv`, ranked overall and per category.
+- `manifest --run NAME [--min-value V] [--min-prob P] [--out DIR]` - the salvage deliverable: read-only over `results.jsonl`/`inventory.jsonl`, writes copy lists and summaries to `runs/NAME/manifest/`.
+
+## Output files
+
+- `runs/NAME/inventory.jsonl` - one row per walked file: path, size, mtime, extension, category, dedupe key.
+- `runs/NAME/walk-errors.log` - files the walker could not read (permissions, long paths).
+- `runs/NAME/results.jsonl` - one row per scanned file: all Jev probabilities, value score, extraction status, tokens used.
+- `runs/NAME/ocr.jsonl` - OCR excerpts for name-only images and no-text PDFs; contains real file content, keep it out of version control.
+- `runs/NAME/report.md` / `report.csv` - the ranked report, overall and per category.
+- `runs/NAME/manifest/copy-list.txt`, `copy-list-verified.txt`, `copy-list-name-only.txt` - one absolute source path per line, ready for `robocopy` or `rsync`.
+- `runs/NAME/manifest/credentials.md` - every row that scored high on credentials, paths only, with a reminder to rotate anything still valid.
+- `runs/NAME/manifest/by-category.md` - a table per category plus a top-30 directory rollup.
+- `runs/NAME/manifest/summary.txt` - counts, total bytes, and a documented copy-tool invocation.
+
+## Privacy
+
+`scan` sends excerpts of file content to whichever API provider you configure (TypeSafe or OpenRouter) so Jev can classify them. `runs/ocr.jsonl` and `runs/results.jsonl` hold those excerpts locally, which can include credentials or other personal information pulled straight from your files; `runs/` is gitignored for this reason and should never be committed or shared as-is.
+
+## Development
 
 ```
 uv sync
+uv run pytest
 ```
 
-`ocr` needs the Tesseract binary installed separately (it is not a Python
-dependency); see docs/RUNBOOK.md's "OCR setup" section. If it is not on
-PATH, set `TESSERACT_CMD` in `.env` to the full path, unquoted or
-single-quoted (a double-quoted value is unescaped by python-dotenv, which
-turns the `\t` in `\tesseract.exe` into a literal tab).
+## License
 
-## Usage
-
-Run everything through `uv run hdd-analyzer <command>`.
-
-### Test drive 1: old Windows system drive
-
-Value lives mostly under `F:\Users`.
-
-```
-uv run hdd-analyzer walk F:\ --run winbox --include Users
-uv run hdd-analyzer estimate --run winbox
-uv run hdd-analyzer scan --run winbox --cap 5
-uv run hdd-analyzer report --run winbox
-```
-
-### Test drive 2: old Linux root filesystem (WSL-mounted)
-
-Value lives mostly under `home/`.
-
-```
-uv run hdd-analyzer walk \\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE4p2 --run linuxbox --include home
-uv run hdd-analyzer estimate --run linuxbox
-uv run hdd-analyzer scan --run linuxbox --cap 5
-uv run hdd-analyzer report --run linuxbox
-```
-
-### OCR a run's name-only images and no-text PDFs
-
-No API spend; only needs Tesseract installed (see Setup above).
-
-```
-uv run hdd-analyzer ocr --run winbox
-uv run hdd-analyzer scan --run winbox --from-ocr --cap 0.25
-uv run hdd-analyzer report --run winbox
-```
-
-### Build the salvage manifest before wiping a drive
-
-```
-uv run hdd-analyzer manifest --run winbox
-```
-
-## Safety
-
-- Drives are opened read-only by convention. The tool never writes outside
-  the repo's `runs/` directory.
-- `scan` prints the candidate file count, estimated tokens, estimated cost,
-  and the hard cap, then asks for interactive `y` confirmation before
-  spending anything (skip with `--yes`).
-- `scan --dry-run` runs extraction only, with zero API calls.
-- The default hard cap is $5 and is enforced before dispatching each batch,
-  using actual spend so far plus a worst-case estimate of the in-flight
-  batch. Results already written to `results.jsonl` are never truncated or
-  discarded when the cap is hit.
+BSD 3-Clause. See [LICENSE](LICENSE).

@@ -38,7 +38,7 @@ def test_resolve_tesseract_raises_clear_error_naming_runbook(monkeypatch, tmp_pa
     monkeypatch.setattr(ocr.shutil, "which", lambda _name: None)
     monkeypatch.setattr(ocr, "_DEFAULT_WINDOWS_TESSERACT", str(missing_default))
 
-    with pytest.raises(RuntimeError, match="RUNBOOK"):
+    with pytest.raises(RuntimeError, match="README"):
         resolve_tesseract()
 
 
@@ -48,7 +48,7 @@ def test_resolve_tesseract_raises_clear_error_naming_runbook(monkeypatch, tmp_pa
 def _row(**overrides):
     base = {
         "dedupe_key": "k",
-        "path": "F:\\Users\\ajmee\\Downloads\\drivers_license.jpg",
+        "path": "D:\\Users\\alex\\Downloads\\drivers_license.jpg",
         "category": "image",
         "extraction_status": "unsupported",
         "value_score": 3.0,

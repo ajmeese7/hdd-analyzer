@@ -1,12 +1,26 @@
 [project]
 name = "hdd-analyzer"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.0.0"
+description = "Triage old hard drives for salvageable files with cost-capped LLM classification and a ranked report."
 readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 authors = [
     { name = "Aaron Meese", email = "aaron@meese.dev" }
 ]
 requires-python = ">=3.13"
+keywords = ["hard-drive", "triage", "classification", "jev", "typesafe", "ocr", "data-recovery", "forensics"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Filesystems",
+    "Topic :: Utilities",
+]
 dependencies = [
     "chardet>=7.6.0",
     "httpx>=0.28.1",
@@ -15,6 +29,11 @@ dependencies = [
     "python-dotenv>=1.2.3",
     "typesafe-sdk>=0.7.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ajmeese7/hdd-analyzer"
+Repository = "https://github.com/ajmeese7/hdd-analyzer"
+Issues = "https://github.com/ajmeese7/hdd-analyzer/issues"
 
 [project.scripts]
 hdd-analyzer = "hdd_analyzer:main"

@@ -36,8 +36,9 @@ from hdd_analyzer.scan import was_name_only
 _LOGGER = logging.getLogger(__name__)
 
 # Tesseract is not on PATH in the verified environment; TESSERACT_CMD (.env)
-# or this default winget install location are the fallbacks. See
-# docs/RUNBOOK.md's "OCR setup" section for the one-time install step.
+# or this default winget install location are the fallbacks. See the
+# README's "Optional: OCR for images and scanned PDFs" section for the
+# one-time install step.
 _DEFAULT_WINDOWS_TESSERACT = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # Extensions tesseract can actually read. HEIC is a valid "image" category
@@ -67,7 +68,7 @@ def resolve_tesseract() -> str:
 
     Precedence: `TESSERACT_CMD` env var, then `tesseract` on PATH, then the
     default Windows winget install location if it exists on disk. Raises a
-    clear, actionable error (pointing at the RUNBOOK) if none resolve,
+    clear, actionable error (pointing at the README) if none resolve,
     rather than letting a bare FileNotFoundError surface from subprocess.
     """
     env_path = os.environ.get("TESSERACT_CMD")
@@ -83,8 +84,8 @@ def resolve_tesseract() -> str:
 
     raise RuntimeError(
         "tesseract not found: not on PATH, TESSERACT_CMD is unset, and the default install path "
-        f"({_DEFAULT_WINDOWS_TESSERACT}) does not exist. See docs/RUNBOOK.md, 'OCR setup' section, "
-        "to install it."
+        f"({_DEFAULT_WINDOWS_TESSERACT}) does not exist. See README.md, "
+        "'Optional: OCR for images and scanned PDFs' section, to install it."
     )
 
 
