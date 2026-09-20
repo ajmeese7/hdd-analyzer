@@ -111,6 +111,15 @@ def load_resumed_keys(run_dir: Path) -> set[str]:
     return keys
 
 
+def load_ocr_classified_keys(run_dir: Path) -> set[str]:
+    """Dedupe keys whose latest result was already classified on OCR evidence."""
+    from hdd_analyzer.report import load_results
+
+    if not (run_dir / "results.jsonl").exists():
+        return set()
+    return {r["dedupe_key"] for r in load_results(run_dir) if r.get("extraction_status") == EXTRACTION_STATUS_OCR}
+
+
 def load_name_only_keys(run_dir: Path) -> set[str]:
     """Dedupe keys worth a targeted `scan --only-name-only` re-classification.
 

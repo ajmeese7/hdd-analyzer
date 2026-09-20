@@ -69,7 +69,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     excerpt_override = None
     if args.from_ocr:
         excerpt_override = ocr_mod.load_ocr_excerpts(run_dir)
-        ocr_keys = set(excerpt_override.keys())
+        ocr_keys = set(excerpt_override.keys()) - scan_mod.load_ocr_classified_keys(run_dir)
         only_keys = ocr_keys if only_keys is None else only_keys & ocr_keys
 
     estimate = scan_mod.estimate_run(
