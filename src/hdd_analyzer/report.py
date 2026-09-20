@@ -20,6 +20,12 @@ MAX_PER_DIR = 3
 
 
 def load_results(run_dir: Path) -> list[dict[str, Any]]:
+    """Latest row per dedupe key, except that an error row never supersedes a successful judgment.
+
+    A targeted rescan that hits a 429 storm appends error rows for keys that
+    already carry a valid (if name-only) result; those rows must not erase
+    the earlier judgment from the report, nor from name-only rescan selection.
+    """
     results_path = run_dir / "results.jsonl"
     if not results_path.exists():
         raise FileNotFoundError(f"no results found at {results_path}; run `scan` first")
@@ -29,6 +35,9 @@ def load_results(run_dir: Path) -> list[dict[str, Any]]:
             if not line.strip():
                 continue
             record = json.loads(line)
+            previous = latest.get(record["dedupe_key"])
+            if record.get("error") and previous is not None and not previous.get("error"):
+                continue
             latest[record["dedupe_key"]] = record
     return list(latest.values())
 

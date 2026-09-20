@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from typesafe_sdk import AsyncTypeSafeClient
+from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy
 
 from hdd_analyzer.budget import BudgetTracker, estimate_tokens, estimate_worst_case_tokens, tokens_to_cost
 from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY, PER_CALL_OVERHEAD_TOKENS, categorize
@@ -20,6 +20,11 @@ from hdd_analyzer.jev_provider import resolve_async_provider
 SYSTEMIC_STATUS_CODES = frozenset({401, 402, 403})
 CONSECUTIVE_SYSTEMIC_LIMIT = 5
 CANARY_STATE = {"path": "canary.txt", "excerpt": "hello"}
+
+# The SDK default (2 retries, 0.5s to 5s backoff) turns a shared gateway's
+# 429 burst into a wall of error rows. Jev calls are cheap and fast, so
+# waiting out a burst is always better than recording a failure.
+RETRY_POLICY = RetryPolicy(max_retries=6, backoff_initial=1.0, backoff_max=20.0, timeout=120.0)
 
 # extraction_status for a candidate whose excerpt came from `scan --from-ocr`
 # (see excerpt_override below) rather than from extract.py.
@@ -131,23 +136,11 @@ def load_name_only_keys(run_dir: Path) -> set[str]:
     metadata only, no file IO; a row that's still name-only after actual
     extraction just gets rewritten with its unchanged status, same as today.
     """
-    results_path = run_dir / "results.jsonl"
-    if not results_path.exists():
+    from hdd_analyzer.report import load_results
+
+    if not (run_dir / "results.jsonl").exists():
         return set()
-    latest: dict[str, dict[str, Any]] = {}
-    with open(results_path, encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            key = record.get("dedupe_key")
-            if key:
-                latest[key] = record
-    name_only_keys = {key for key, record in latest.items() if was_name_only(record)}
+    name_only_keys = {row["dedupe_key"] for row in load_results(run_dir) if not row.get("error") and was_name_only(row)}
     if not name_only_keys:
         return name_only_keys
 
@@ -511,7 +504,9 @@ async def run_scan(
         _run_extraction_pipeline(to_extract, out_queue, concurrency, excerpt_override, skip_metadata_only=only_keys is not None)
     )
 
-    async with AsyncTypeSafeClient(api_key=api_key, model=provider.model, **provider.client_kwargs) as client:
+    async with AsyncTypeSafeClient(
+        api_key=api_key, model=provider.model, retry=RETRY_POLICY, **provider.client_kwargs
+    ) as client:
         canary_exc = await _run_canary(client, tracker)
         if canary_exc is not None and is_systemic_error(canary_exc):
             outcome.aborted_reason = tracker_state.canary_abort_reason(canary_exc)

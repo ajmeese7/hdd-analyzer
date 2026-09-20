@@ -1,4 +1,13 @@
-from hdd_analyzer.report import _category_table, collapse_siblings, render_report_md, split_by_verified, verified_label
+import json
+
+from hdd_analyzer.report import (
+    _category_table,
+    collapse_siblings,
+    load_results,
+    render_report_md,
+    split_by_verified,
+    verified_label,
+)
 
 
 _ROWS = [
@@ -92,3 +101,39 @@ def test_collapse_siblings_treats_different_directories_independently():
     collapsed = collapse_siblings(rows, max_per_dir=3)
     assert len(collapsed) == 5
     assert collapsed[-1] == rows[-1]
+
+
+def _write_results(path, rows):
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+def test_load_results_keeps_latest_row_per_key(tmp_path):
+    _write_results(tmp_path / "results.jsonl", [
+        {"dedupe_key": "a", "value_score": 1.0, "error": None},
+        {"dedupe_key": "a", "value_score": 2.0, "error": None},
+    ])
+    assert [r["value_score"] for r in load_results(tmp_path)] == [2.0]
+
+
+def test_load_results_never_lets_an_error_row_supersede_a_valid_judgment(tmp_path):
+    _write_results(tmp_path / "results.jsonl", [
+        {"dedupe_key": "a", "value_score": 1.0, "error": None},
+        {"dedupe_key": "a", "error": "429 high demand"},
+    ])
+    assert load_results(tmp_path) == [{"dedupe_key": "a", "value_score": 1.0, "error": None}]
+
+
+def test_load_results_keeps_an_error_row_when_nothing_better_exists(tmp_path):
+    _write_results(tmp_path / "results.jsonl", [
+        {"dedupe_key": "a", "error": "timeout"},
+        {"dedupe_key": "a", "error": "429 high demand"},
+    ])
+    assert load_results(tmp_path) == [{"dedupe_key": "a", "error": "429 high demand"}]
+
+
+def test_load_results_lets_a_valid_row_replace_an_earlier_error(tmp_path):
+    _write_results(tmp_path / "results.jsonl", [
+        {"dedupe_key": "a", "error": "timeout"},
+        {"dedupe_key": "a", "value_score": 1.5, "error": None},
+    ])
+    assert [r["value_score"] for r in load_results(tmp_path)] == [1.5]
