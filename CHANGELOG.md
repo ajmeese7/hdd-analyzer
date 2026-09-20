@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.0 - 2026-09-20
+
+- `report`: also writes `report.html`, a self-contained interactive report with summary tiles, a "where to focus" list of the directories holding the most notable files, a collapsible directory tree with notable/scanned counts per subtree, and a searchable, filterable table of every notable file. New `--min-value` flag (default 2.0, matching `manifest`) sets the value floor for a file to count as notable.
+- Provider resolution: Vercel AI Gateway keys (`vck_` prefix) route to the gateway's TypeSafe-compatible endpoint with model `typesafe-ai/jev`; `JEV_PROVIDER=vercel` forces it.
+- `walk`: a relative root (`walk docs --run x`) now works on Windows; the extended-length `\\?\` prefix requires an absolute path, so it was silently listing nothing.
+- pyproject: drop the deprecated license classifier (PEP 639); `license = "BSD-3-Clause"` already declares it.
+
 ## 1.0.1 - 2026-09-21
 
 - README: link the demo GIF by absolute GitHub URL so it renders on PyPI.

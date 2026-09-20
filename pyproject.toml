@@ -1,6 +1,6 @@
 [project]
 name = "hdd-analyzer"
-version = "1.0.1"
+version = "1.1.0"
 description = "Triage old hard drives for salvageable files with cost-capped LLM classification and a ranked report."
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -15,7 +15,6 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.13",
     "Topic :: System :: Filesystems",

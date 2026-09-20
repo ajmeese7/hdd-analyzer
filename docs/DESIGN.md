@@ -10,7 +10,7 @@ Target environments: a locally attached or externally mounted Windows drive (e.g
 - `estimate --run NAME` -> token + dollar estimate for a scan of the inventory. No network.
 - `scan --run NAME [--cap USD] [--limit N] [--yes] [--dry-run] [--only-name-only] [--exclude-ext EXT[,EXT...]] [--from-ocr]` -> extraction + Jev calls, appends `runs/NAME/results.jsonl` incrementally (resumable: skips file hashes already present). Prints running spend. Hard-stops at cap (default $5). Prompts with the estimate before spending unless `--yes`. `--dry-run` does extraction only, zero API calls. `--only-name-only` restricts candidates to rows that were judged from filename alone (`was_name_only`) AND that today's extraction would actually attempt (`extract._extraction_eligible` against today's `categorize(ext)`, no file IO at selection time), for a cheap targeted re-scan after an extraction/categorization fix; this bypasses the normal resume skip for those specific keys, everything else keeps normal resume semantics. `--exclude-ext` drops specific extensions from candidates on top of whatever selection is in effect. `--from-ocr` restricts candidates to dedupe keys with an `ok` row in `runs/NAME/ocr.jsonl` (see the `ocr` stage below) and classifies each using its OCR excerpt instead of running extraction, recording `extraction_status: "ocr"`. The filtered count is what prints as "candidate files" before the confirmation prompt.
 - `ocr --run NAME [--top N] [--all] [--min-value V] [--limit N]` -> local, free, zero-API-call OCR pass over an existing run's `results.jsonl`. Selects name-only image rows and name-only PDF rows whose extraction found no text, runs Tesseract on a thread pool, and writes `runs/NAME/ocr.jsonl`. See the OCR stage section below.
-- `report --run NAME [--top N] [--min-prob P]` -> `runs/NAME/report.md` + `report.csv`, ranked per category and overall.
+- `report --run NAME [--top N] [--min-prob P] [--min-value V]` -> `runs/NAME/report.md` + `report.csv` (ranked per category and overall) + `report.html` (interactive directory tree, see HTML report below).
 - `annotate --run NAME [--all] [--top N] [--min-prob P]` -> backfills `metadata_only`/`extraction_status` on `results.jsonl` rows that predate the fields entirely (zero API calls). Never overwrites a row that already has a stored scan-time status, since the report's "verified" column must reflect what Jev actually saw, not what extraction can do today; instead it lists such rows separately as re-scan candidates when today's extraction would now succeed. By default only report-surfaced rows are checked; `--all` covers every row.
 - `manifest --run NAME [--min-value V] [--min-prob P] [--out DIR]` -> the salvage deliverable: read-only over `results.jsonl`/`inventory.jsonl` (never writes either), writes `runs/NAME/manifest/` (or `--out`) with copy lists and summaries. See the Manifest stage section below.
 
@@ -209,12 +209,20 @@ content instead.
 - `SystemOneResponse.answers: dict[str, Answer]`, `.usage.input_tokens: int|None`
 - Errors: TypeSafeAPIError (has .status via subclass), TypeSafeRateLimitError, TypeSafeAuthenticationError.
 
-## Provider resolution (native TypeSafe or OpenRouter)
+## Provider resolution (native TypeSafe, OpenRouter, or Vercel AI Gateway)
 
-`TYPESAFE_API_KEY` may hold either a native TypeSafe key or an OpenRouter key
-(prefix `sk-or-`). `hdd_analyzer.jev_provider.resolve_provider` picks the
-provider: OpenRouter if the key starts with `sk-or-`, native TypeSafe
-otherwise, with `JEV_PROVIDER=openrouter|typesafe` overriding the sniff.
+`TYPESAFE_API_KEY` may hold a native TypeSafe key, an OpenRouter key (prefix
+`sk-or-`), or a Vercel AI Gateway key (prefix `vck_`).
+`hdd_analyzer.jev_provider.resolve_provider` picks the provider from the
+prefix, native TypeSafe when nothing matches, with
+`JEV_PROVIDER=typesafe|openrouter|vercel` overriding the sniff.
+
+Vercel AI Gateway exposes a TypeSafe-compatible API at
+`https://ai-gateway.vercel.sh/typesafe` (`POST /v1/systemone`, TypeSafe's own
+request and response shapes, Bearer auth with the gateway key), so it needs
+only a different `base_url` and the model id `typesafe-ai/jev`; no transport
+wrapper. The gateway adds a `provider_metadata` field to responses, which the
+SDK's response models ignore (`extra="ignore"`).
 
 OpenRouter serves Jev at its Decisions API, `POST
 https://openrouter.ai/api/alpha/decisions`, model id `typesafe/jev-1.13`,
@@ -227,6 +235,31 @@ HTTP transport: `OpenRouterTransport` (sync) and `AsyncOpenRouterTransport`
 `httpx2.AsyncHTTPTransport`. `scan` uses `AsyncTypeSafeClient`, so it wires
 `AsyncOpenRouterTransport` via `resolve_async_provider`. `scan` prints the
 resolved provider and model at startup.
+
+## HTML report
+
+`report_html.py` renders `report.html`, a single self-contained page (inline
+CSS/JS, no external assets) from a JSON payload embedded in a
+`<script type="application/json">` block. `build_tree` aggregates every valid
+result row into a directory trie keyed by `paths.pure_path(...).parents`, so
+Windows and POSIX paths both split correctly on any host. Every row bumps its
+directory's `scanned` count; only rows passing `manifest.is_manifest_included`
+(the same notable test the manifest uses, with `report --min-value` and
+`--min-prob`) are embedded as file entries. `_finalize` post-order rolls up
+`scanned_subtree`, `notable_subtree`, per-category counts at or above
+`min_prob`, max value, and notable bytes, prunes subtrees with no notable
+files (their scanned counts still roll into the surviving ancestor), and
+collapses single-child chains with no direct files (`F:\Users\ajmee` becomes
+one node). Children sort by `notable_subtree` desc.
+
+Payload size is dominated by paths, so file entries carry a `dir` index into
+a flat `dirs` list (each with a trailing native separator) plus `name`, and
+the page joins them. The JSON is `ensure_ascii` (odd filenames may carry lone
+surrogates) with `</` escaped so a filename cannot terminate the script
+block. Entries never include excerpts. The page renders tree children lazily
+on expand, caps rendered children per node with a "more" row, pages the
+ranked table, and auto-selects the directory with the most direct notable
+files.
 
 ## Report format
 
@@ -287,6 +320,6 @@ Output, written to `runs/NAME/manifest/` (or `--out`):
 
 ## Layout
 
-hdd_analyzer/{__init__.py, cli.py (argparse), config.py, walker.py, extract.py, jev.py, jev_provider.py, scan.py, ocr.py, report.py, annotate.py, manifest.py, paths.py}
+hdd_analyzer/{__init__.py, cli.py (argparse), config.py, walker.py, extract.py, jev.py, jev_provider.py, scan.py, ocr.py, report.py, report_html.py, templates/report.html, annotate.py, manifest.py, paths.py}
 tests/ for pure logic only (skip rules, categorization, excerpt sanitization, budget accounting, OCR selection/resolution, manifest selection/rollup). No mocks, no network, no tesseract invocation in tests.
 Console script: `hdd-analyzer = hdd_analyzer:main` in pyproject (re-exported from `cli.main`).

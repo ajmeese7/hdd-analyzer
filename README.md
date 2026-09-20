@@ -4,11 +4,11 @@
   <img src="https://raw.githubusercontent.com/ajmeese7/hdd-analyzer/master/promo/hdd-analyzer.gif" alt="hdd-analyzer walking a drive, scanning files with an LLM, and ranking the keepers">
 </p>
 
-Old hard drives pile up faster than anyone can manually sort them, and most of what is on them is "dark data": junk, caches, and installers with a handful of genuinely irreplaceable files buried inside. hdd-analyzer walks a drive for free, estimates the token and dollar budget to have [Jev](https://typesafe.ai) (TypeSafe's [System One](https://docs.typesafe.ai/concepts/system-one) decision model, also served through [OpenRouter](https://openrouter.ai/typesafe/jev-1.13)) read every file, then runs a capped classification pass and produces a ranked report so a human can decide what is worth keeping before the drive gets wiped. Cheap, fast inference has made this kind of exhaustive per-file triage practical in a way it was not a few years ago.
+Old hard drives pile up faster than anyone can manually sort them, and most of what is on them is "dark data": junk, caches, and installers with a handful of genuinely irreplaceable files buried inside. hdd-analyzer walks a drive for free, estimates the token and dollar budget to have [Jev](https://typesafe.ai) (TypeSafe's [System One](https://docs.typesafe.ai/concepts/system-one) decision model, also served through [OpenRouter](https://openrouter.ai/typesafe/jev-1.13) and [Vercel AI Gateway](https://vercel.com/ai-gateway/models/jev)) read every file, then runs a capped classification pass and produces a ranked report so a human can decide what is worth keeping before the drive gets wiped. Cheap, fast inference has made this kind of exhaustive per-file triage practical in a way it was not a few years ago.
 
 ## What is Jev?
 
-Jev is [TypeSafe](https://typesafe.ai)'s System One decision model: instead of free-text generation, it answers a fixed set of yes/no questions (nouls), scored questions, and multiple-choice questions against a piece of state, returning calibrated probabilities instead of prose, which makes it well suited to structured classification like this tool's per-file rubric. hdd-analyzer talks to Jev either directly through TypeSafe's API or through [OpenRouter's Decisions endpoint](https://openrouter.ai/typesafe/jev-1.13), auto-detected from your API key.
+Jev is [TypeSafe](https://typesafe.ai)'s System One decision model: instead of free-text generation, it answers a fixed set of yes/no questions (nouls), scored questions, and multiple-choice questions against a piece of state, returning calibrated probabilities instead of prose, which makes it well suited to structured classification like this tool's per-file rubric. hdd-analyzer talks to Jev directly through TypeSafe's API, through [OpenRouter's Decisions endpoint](https://openrouter.ai/typesafe/jev-1.13), or through [Vercel AI Gateway's TypeSafe-compatible endpoint](https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe), auto-detected from your API key.
 
 ## Install
 
@@ -30,8 +30,8 @@ Create a `.env` file in the working directory you'll run `hdd-analyzer` from; it
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `TYPESAFE_API_KEY` | yes | Either a native TypeSafe key or an OpenRouter key (prefix `sk-or-`). The provider is auto-detected from the prefix. |
-| `JEV_PROVIDER` | no | `openrouter` or `typesafe`, overrides the key-prefix auto-detection. |
+| `TYPESAFE_API_KEY` | yes | A native TypeSafe key, an OpenRouter key (prefix `sk-or-`), or a Vercel AI Gateway key (prefix `vck_`). The provider is auto-detected from the prefix. |
+| `JEV_PROVIDER` | no | `typesafe`, `openrouter`, or `vercel`, overrides the key-prefix auto-detection. |
 | `TESSERACT_CMD` | no | Full path to `tesseract.exe` if it is not on PATH. Needed only for the optional `ocr` command. |
 
 ```
@@ -52,7 +52,7 @@ hdd-analyzer report --run olddrive
 hdd-analyzer manifest --run olddrive
 ```
 
-`walk` inventories the drive for free. `estimate` prices out a full scan with no network calls. `scan` extracts local content and sends one classification call per file to Jev, prompting for confirmation and stopping at the cap. `report` renders `runs/olddrive/report.md` and `report.csv`, ranked overall and per category. `manifest` turns the results into a salvage copy list in `runs/olddrive/manifest/`, ready to hand to `robocopy` or `rsync` before the drive is wiped.
+`walk` inventories the drive for free. `estimate` prices out a full scan with no network calls. `scan` extracts local content and sends one classification call per file to Jev, prompting for confirmation and stopping at the cap. `report` renders `runs/olddrive/report.md`, `report.csv`, and `report.html`, ranked overall and per category. Open `report.html` in a browser for a navigable directory tree that shows where the notable files cluster, so you know where to look first when going through the drive by hand. `manifest` turns the results into a salvage copy list in `runs/olddrive/manifest/`, ready to hand to `robocopy` or `rsync` before the drive is wiped.
 
 ## How it stays cheap and safe
 
@@ -98,7 +98,7 @@ hdd-analyzer report --run olddrive
 - `scan --run NAME [--cap USD] [--limit N] [--yes] [--dry-run] [--only-name-only] [--exclude-ext EXT[,EXT...]] [--from-ocr]` - local extraction plus one Jev call per file, under a hard spend cap. Appends to `runs/NAME/results.jsonl` and is resumable.
 - `annotate --run NAME [--all] [--top N] [--min-prob P]` - backfills `metadata_only`/`extraction_status` onto existing results by re-running local extraction only, zero API calls.
 - `ocr --run NAME [--top N] [--all] [--min-value V] [--limit N]` - local, free OCR pass over an existing run's name-only image and no-text-PDF rows.
-- `report --run NAME [--top N] [--min-prob P]` - renders `runs/NAME/report.md` and `report.csv`, ranked overall and per category.
+- `report --run NAME [--top N] [--min-prob P] [--min-value V]` - renders `runs/NAME/report.md`, `report.csv`, and `report.html`, ranked overall and per category. `--min-value` and `--min-prob` set which files count as notable in the HTML report; the defaults match `manifest`.
 - `manifest --run NAME [--min-value V] [--min-prob P] [--out DIR]` - the salvage deliverable: read-only over `results.jsonl`/`inventory.jsonl`, writes copy lists and summaries to `runs/NAME/manifest/`.
 
 ## Output files
@@ -108,6 +108,7 @@ hdd-analyzer report --run olddrive
 - `runs/NAME/results.jsonl` - one row per scanned file: all Jev probabilities, value score, extraction status, tokens used.
 - `runs/NAME/ocr.jsonl` - OCR excerpts for name-only images and no-text PDFs; contains real file content, keep it out of version control.
 - `runs/NAME/report.md` / `report.csv` - the ranked report, overall and per category.
+- `runs/NAME/report.html` - self-contained interactive report: summary tiles, the directories holding the most notable files, a collapsible directory tree with notable/scanned counts per subtree, and a searchable, filterable table of every notable file. Contains paths and scores only, never file content.
 - `runs/NAME/manifest/copy-list.txt`, `copy-list-verified.txt`, `copy-list-name-only.txt` - one absolute source path per line, ready for `robocopy` or `rsync`.
 - `runs/NAME/manifest/credentials.md` - every row that scored high on credentials, paths only, with a reminder to rotate anything still valid.
 - `runs/NAME/manifest/by-category.md` - a table per category plus a top-30 directory rollup.
@@ -115,7 +116,7 @@ hdd-analyzer report --run olddrive
 
 ## Privacy
 
-`scan` sends excerpts of file content to whichever API provider you configure (TypeSafe or OpenRouter) so Jev can classify them. `runs/ocr.jsonl` and `runs/results.jsonl` hold those excerpts locally, which can include credentials or other personal information pulled straight from your files; `runs/` is gitignored for this reason and should never be committed or shared as-is.
+`scan` sends excerpts of file content to whichever API provider you configure (TypeSafe, OpenRouter, or Vercel AI Gateway) so Jev can classify them. `runs/ocr.jsonl` and `runs/results.jsonl` hold those excerpts locally, which can include credentials or other personal information pulled straight from your files; `runs/` is gitignored for this reason and should never be committed or shared as-is.
 
 ## Development
 
