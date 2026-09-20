@@ -381,9 +381,17 @@ class ScanOutcome:
 
 
 async def _extract_worker(
-    input_queue: asyncio.Queue, out_queue: asyncio.Queue, excerpt_override: dict[str, str] | None = None
+    input_queue: asyncio.Queue,
+    out_queue: asyncio.Queue,
+    excerpt_override: dict[str, str] | None = None,
+    skip_metadata_only: bool = False,
 ) -> None:
-    """Pull records off `input_queue`, extract, push finished candidates to `out_queue`."""
+    """Pull records off `input_queue`, extract, push finished candidates to `out_queue`.
+
+    With `skip_metadata_only`, candidates whose content still cannot be read
+    are dropped instead of dispatched: a name-only re-scan of a row that is
+    still name-only would only reproduce the verdict already on disk.
+    """
     while True:
         try:
             record = input_queue.get_nowait()
@@ -397,6 +405,8 @@ async def _extract_worker(
         excerpt, metadata_only, extraction_status = await extract_excerpt_async(
             path, record["category"], record["ext"], record["size"]
         )
+        if skip_metadata_only and metadata_only:
+            continue
         await out_queue.put(_candidate_from_record(record, excerpt, metadata_only, extraction_status))
 
 
@@ -405,6 +415,7 @@ async def _run_extraction_pipeline(
     out_queue: asyncio.Queue,
     concurrency: int,
     excerpt_override: dict[str, str] | None = None,
+    skip_metadata_only: bool = False,
 ) -> None:
     """Extract every record concurrently, then signal completion with a sentinel.
 
@@ -417,7 +428,10 @@ async def _run_extraction_pipeline(
     for record in records:
         input_queue.put_nowait(record)
 
-    workers = [asyncio.create_task(_extract_worker(input_queue, out_queue, excerpt_override)) for _ in range(concurrency)]
+    workers = [
+        asyncio.create_task(_extract_worker(input_queue, out_queue, excerpt_override, skip_metadata_only))
+        for _ in range(concurrency)
+    ]
     await asyncio.gather(*workers)
     await out_queue.put(None)
 
@@ -484,7 +498,9 @@ async def run_scan(
     print(f"jev provider: {provider.name} (model={provider.model})")
 
     tracker_state = SystemicErrorTracker()
-    extraction_task = asyncio.create_task(_run_extraction_pipeline(to_extract, out_queue, concurrency, excerpt_override))
+    extraction_task = asyncio.create_task(
+        _run_extraction_pipeline(to_extract, out_queue, concurrency, excerpt_override, skip_metadata_only=only_keys is not None)
+    )
 
     async with AsyncTypeSafeClient(api_key=api_key, model=provider.model, **provider.client_kwargs) as client:
         canary_exc = await _run_canary(client, tracker)
