@@ -1,4 +1,7 @@
-from hdd_analyzer.scan import CONSECUTIVE_SYSTEMIC_LIMIT, SystemicErrorTracker, is_systemic_error
+import asyncio
+import time
+
+from hdd_analyzer.scan import CONSECUTIVE_SYSTEMIC_LIMIT, Pacer, SystemicErrorTracker, is_systemic_error
 
 
 class _FakeAPIError(Exception):
@@ -86,3 +89,23 @@ def test_abort_reason_keeps_first_message_across_the_streak():
     reason = tracker.abort_reason()
     assert "first message" in reason
     assert "second message" not in reason
+
+
+def test_pacer_spaces_starts_at_the_configured_rate():
+    async def run():
+        pacer = Pacer(rpm=1200)  # one start per 50 ms
+        started = time.monotonic()
+        await asyncio.gather(*(pacer.wait() for _ in range(5)))
+        return time.monotonic() - started
+
+    assert asyncio.run(run()) >= 0.2
+
+
+def test_pacer_disabled_when_rpm_is_none():
+    async def run():
+        pacer = Pacer(rpm=None)
+        started = time.monotonic()
+        await asyncio.gather(*(pacer.wait() for _ in range(50)))
+        return time.monotonic() - started
+
+    assert asyncio.run(run()) < 0.05

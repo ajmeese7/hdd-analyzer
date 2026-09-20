@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,30 @@ CANARY_STATE = {"path": "canary.txt", "excerpt": "hello"}
 # 429 burst into a wall of error rows. Jev calls are cheap and fast, so
 # waiting out a burst is always better than recording a failure.
 RETRY_POLICY = RetryPolicy(max_retries=6, backoff_initial=1.0, backoff_max=20.0, timeout=120.0)
+
+
+class Pacer:
+    """Space request starts evenly at `rpm` per minute across every worker.
+
+    Vercel AI Gateway's free tier caps a model at 30 requests/minute, and a
+    scan that ignores that spends its time in 429 backoff rather than
+    classifying. `rpm=None` disables pacing.
+    """
+
+    def __init__(self, rpm: float | None) -> None:
+        self.interval = 60.0 / rpm if rpm else 0.0
+        self._next_start = 0.0
+        self._lock = asyncio.Lock()
+
+    async def wait(self) -> None:
+        if not self.interval:
+            return
+        async with self._lock:
+            now = time.monotonic()
+            delay = max(0.0, self._next_start - now)
+            self._next_start = max(now, self._next_start) + self.interval
+        if delay:
+            await asyncio.sleep(delay)
 
 # extraction_status for a candidate whose excerpt came from `scan --from-ocr`
 # (see excerpt_override below) rather than from extract.py.
@@ -289,6 +314,7 @@ def bill_result(tracker: BudgetTracker, result: dict[str, Any], fallback_chars: 
 async def _classify_one(
     client: AsyncTypeSafeClient,
     semaphore: asyncio.Semaphore,
+    pacer: Pacer,
     candidate: ScanCandidate,
 ) -> tuple[dict[str, Any], BaseException | None]:
     """Classify one candidate. Returns (result, raised_exception_or_none).
@@ -307,6 +333,7 @@ async def _classify_one(
         metadata_only=candidate.metadata_only,
     )
     async with semaphore:
+        await pacer.wait()
         try:
             response = await classify_file(client, state)
         except Exception as exc:  # noqa: BLE001 - per-file errors must never abort the run here
@@ -474,6 +501,7 @@ async def run_scan(
     only_keys: set[str] | None = None,
     exclude_exts: set[str] | None = None,
     excerpt_override: dict[str, str] | None = None,
+    rpm: float | None = None,
 ) -> ScanOutcome:
     """Dispatch classification calls for unresolved candidates, batch by batch.
 
@@ -484,7 +512,8 @@ async def run_scan(
     restricts candidates to a specific dedupe-key set (see `--only-name-only`).
     `exclude_exts` drops extensions on top of that (see `--exclude-ext`).
     `excerpt_override` short-circuits extraction for the given dedupe keys
-    (see `--from-ocr`).
+    (see `--from-ocr`). `rpm` caps classification requests per minute (see
+    `--rpm`).
     """
     records = load_inventory(run_dir)
     resumed_keys = load_resumed_keys(run_dir)
@@ -494,6 +523,7 @@ async def run_scan(
     outcome = ScanOutcome()
     results_path = run_dir / "results.jsonl"
     semaphore = asyncio.Semaphore(concurrency)
+    pacer = Pacer(rpm)
     out_queue: asyncio.Queue = asyncio.Queue(maxsize=concurrency * 4)
 
     provider = resolve_async_provider(api_key)
@@ -527,7 +557,7 @@ async def run_scan(
                     outcome.stopped_at_cap = True
                     break
 
-                pairs = await asyncio.gather(*(_classify_one(client, semaphore, c) for c in batch))
+                pairs = await asyncio.gather(*(_classify_one(client, semaphore, pacer, c) for c in batch))
                 aborted = False
                 for result, exc in pairs:
                     if exc is not None:

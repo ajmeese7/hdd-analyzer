@@ -109,10 +109,11 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             api_key=api_key,
             cap_usd=args.cap,
             limit=args.limit,
-            concurrency=DEFAULT_CONCURRENCY,
+            concurrency=args.concurrency,
             only_keys=only_keys,
             exclude_exts=exclude_exts,
             excerpt_override=excerpt_override,
+            rpm=args.rpm,
         )
     )
 
@@ -224,6 +225,15 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--limit", type=int, default=None, help="Limit number of files scanned.")
     scan_parser.add_argument("--yes", action="store_true", help="Skip interactive confirmation.")
     scan_parser.add_argument("--dry-run", action="store_true", help="Extraction only; zero API calls.")
+    scan_parser.add_argument(
+        "--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Concurrent extraction and classification workers."
+    )
+    scan_parser.add_argument(
+        "--rpm",
+        type=float,
+        default=None,
+        help="Cap classification requests per minute. Vercel AI Gateway's free tier allows 30; use 28.",
+    )
     scan_parser.add_argument(
         "--only-name-only",
         action="store_true",

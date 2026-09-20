@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `scan --rpm N` paces classification requests for rate-limited providers (Vercel AI Gateway's free tier allows 30 per minute), and `--concurrency N` exposes the worker count.
+- `scan` retries 429s and 5xx with a longer backoff (6 attempts, 1s to 20s) instead of the SDK default that turned a gateway burst into error rows.
+- `load_results` never lets an error row supersede a successful judgment, so a failed rescan cannot hide a prior result from the report or from `--only-name-only` selection.
+
 ## 1.1.0 - 2026-09-20
 
 - `report`: also writes `report.html`, a self-contained interactive report with summary tiles, a "where to focus" list of the directories holding the most notable files, a collapsible directory tree with notable/scanned counts per subtree, and a searchable, filterable table of every notable file. New `--min-value` flag (default 2.0, matching `manifest`) sets the value floor for a file to count as notable.

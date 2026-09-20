@@ -32,6 +32,8 @@ Create a `.env` file in the working directory you'll run `hdd-analyzer` from; it
 | --- | --- | --- |
 | `TYPESAFE_API_KEY` | yes | A native TypeSafe key, an OpenRouter key (prefix `sk-or-`), or a Vercel AI Gateway key (prefix `vck_`). The provider is auto-detected from the prefix. |
 | `JEV_PROVIDER` | no | `typesafe`, `openrouter`, or `vercel`, overrides the key-prefix auto-detection. |
+
+Vercel AI Gateway's free tier rate-limits each model to 30 requests per minute; pass `scan --rpm 28` there, or buy any amount of gateway credits to move to the paid tier, which lifts the limit.
 | `TESSERACT_CMD` | no | Full path to `tesseract.exe` if it is not on PATH. Needed only for the optional `ocr` command. |
 
 ```
@@ -95,7 +97,7 @@ hdd-analyzer report --run olddrive
 
 - `walk ROOT --run NAME [--include SUBPATH ...]` - free, deterministic inventory walk. Writes `runs/NAME/inventory.jsonl`.
 - `estimate --run NAME` - token and dollar estimate for a scan. No network calls.
-- `scan --run NAME [--cap USD] [--limit N] [--yes] [--dry-run] [--only-name-only] [--exclude-ext EXT[,EXT...]] [--from-ocr]` - local extraction plus one Jev call per file, under a hard spend cap. Appends to `runs/NAME/results.jsonl` and is resumable.
+- `scan --run NAME [--cap USD] [--limit N] [--yes] [--dry-run] [--concurrency N] [--rpm N] [--only-name-only] [--exclude-ext EXT[,EXT...]] [--from-ocr]` - local extraction plus one Jev call per file, under a hard spend cap. Appends to `runs/NAME/results.jsonl` and is resumable. `--rpm` paces requests for rate-limited providers (Vercel AI Gateway's free tier allows 30 per minute; use `--rpm 28`).
 - `annotate --run NAME [--all] [--top N] [--min-prob P]` - backfills `metadata_only`/`extraction_status` onto existing results by re-running local extraction only, zero API calls.
 - `ocr --run NAME [--top N] [--all] [--min-value V] [--limit N]` - local, free OCR pass over an existing run's name-only image and no-text-PDF rows.
 - `report --run NAME [--top N] [--min-prob P] [--min-value V]` - renders `runs/NAME/report.md`, `report.csv`, and `report.html`, ranked overall and per category. `--min-value` and `--min-prob` set which files count as notable in the HTML report; the defaults match `manifest`.
