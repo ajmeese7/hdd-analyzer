@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from hdd_analyzer.budget import tokens_to_cost
+from hdd_analyzer.paths import pure_path
 
 NOUL_CATEGORIES = ("credentials", "personal", "financial_legal", "original_work", "irreplaceable")
 DEFAULT_TOP_N = 25
@@ -97,7 +98,7 @@ def split_by_verified(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]],
 
 
 def _parent_dir(path: str) -> str:
-    return str(Path(path).parent)
+    return str(pure_path(path).parent)
 
 
 def collapse_siblings(rows: list[dict[str, Any]], max_per_dir: int = MAX_PER_DIR) -> list[dict[str, Any]]:

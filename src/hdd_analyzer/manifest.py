@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from hdd_analyzer.paths import pure_path
 from hdd_analyzer.report import NOUL_CATEGORIES, _format_size, collapse_siblings, load_results, verified_label
 
 MANIFEST_DEFAULT_MIN_VALUE = 2.0
@@ -70,7 +71,7 @@ def split_verified_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]
 
 
 def _sort_key(row: dict[str, Any]) -> tuple[str, str]:
-    path = Path(row["path"])
+    path = pure_path(row["path"])
     return str(path.parent).lower(), path.name.lower()
 
 
@@ -93,7 +94,7 @@ def directory_rollup(rows: list[dict[str, Any]], top_n: int = TOP_DIRS) -> list[
     """Top `top_n` directories by count of `rows` they contain, most first."""
     counts: dict[str, int] = {}
     for row in rows:
-        directory = str(Path(row["path"]).parent)
+        directory = str(pure_path(row["path"]).parent)
         counts[directory] = counts.get(directory, 0) + 1
     return sorted(counts.items(), key=lambda item: item[1], reverse=True)[:top_n]
 

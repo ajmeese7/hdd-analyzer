@@ -7,7 +7,22 @@ long paths reached through the WSL UNC redirector (\\\\wsl.localhost\\...).
 
 from __future__ import annotations
 
+import re
 import sys
+from pathlib import PurePath, PurePosixPath, PureWindowsPath
+
+_WINDOWS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+
+
+def pure_path(path_str: str) -> PurePath:
+    """Parse a recorded path with the flavor it was written in, on any host.
+
+    Inventory and result files carry the walked drive's native paths, and a
+    report generated on Linux from a Windows walk must still split on
+    backslashes.
+    """
+    return PureWindowsPath(path_str) if _WINDOWS_PATH.match(path_str) else PurePosixPath(path_str)
+
 
 _DRIVE_PREFIX = "\\\\?\\"
 _UNC_PREFIX = "\\\\?\\UNC\\"
