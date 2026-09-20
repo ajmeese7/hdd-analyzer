@@ -12,19 +12,17 @@ Jev is [TypeSafe](https://typesafe.ai)'s System One decision model: instead of f
 
 ## Install
 
-Not yet on PyPI. Install straight from GitHub:
-
 ```
-pip install git+https://github.com/ajmeese7/hdd-analyzer.git
+pip install hdd-analyzer
 ```
 
-Or with `uv`:
+Or as an isolated tool with `uv`:
 
 ```
-uv tool install git+https://github.com/ajmeese7/hdd-analyzer.git
+uv tool install hdd-analyzer
 ```
 
-Requires Python 3.13+.
+Requires Python 3.13+. To run the latest unreleased code instead, install from GitHub with `pip install git+https://github.com/ajmeese7/hdd-analyzer.git`.
 
 ## Configuration
 
