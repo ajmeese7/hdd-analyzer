@@ -130,7 +130,23 @@ def load_name_only_keys(run_dir: Path) -> set[str]:
             key = record.get("dedupe_key")
             if key:
                 latest[key] = record
-    return {key for key, record in latest.items() if record.get("extraction_status") != "ok"}
+    return {key for key, record in latest.items() if was_name_only(record)}
+
+
+# Categories the original (rubric v1) scan attempted content extraction for.
+_LEGACY_EXTRACTED_CATEGORIES = frozenset({"text", "code", "doc"})
+
+
+def was_name_only(record: dict[str, Any]) -> bool:
+    """True if the classifier judged this result row from filename and metadata alone.
+
+    Rows written before extraction_status existed are inferred from their
+    stored category: the v1 scan only ever read text, code, and doc files.
+    """
+    status = record.get("extraction_status")
+    if status is not None:
+        return status != "ok"
+    return record.get("category") not in _LEGACY_EXTRACTED_CATEGORIES
 
 
 def eligible_records(

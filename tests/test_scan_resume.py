@@ -168,3 +168,19 @@ def test_eligible_records_only_keys_still_skips_duplicates():
     records = [{"dedupe_key": "name-only", "dup_of": "some/other/path"}]
     eligible = eligible_records(records, resumed_keys=set(), only_keys={"name-only"})
     assert eligible == []
+
+
+def test_was_name_only_uses_stored_status_when_present():
+    from hdd_analyzer.scan import was_name_only
+
+    assert was_name_only({"extraction_status": "unsupported", "category": "text"}) is True
+    assert was_name_only({"extraction_status": "ok", "category": "image"}) is False
+
+
+def test_was_name_only_infers_legacy_rows_from_category():
+    from hdd_analyzer.scan import was_name_only
+
+    assert was_name_only({"category": "image"}) is True
+    assert was_name_only({"category": "binary"}) is True
+    assert was_name_only({"category": "text"}) is False
+    assert was_name_only({"category": "code"}) is False
