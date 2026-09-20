@@ -2,6 +2,8 @@ from hdd_analyzer.jev_provider import (
     NATIVE_MODEL,
     OPENROUTER_BASE_URL,
     OPENROUTER_MODEL,
+    VERCEL_BASE_URL,
+    VERCEL_MODEL,
     resolve_provider,
     rewrite_path,
 )
@@ -22,6 +24,21 @@ def test_resolve_provider_openrouter_key(monkeypatch):
     assert config.model == OPENROUTER_MODEL
     assert config.client_kwargs["base_url"] == OPENROUTER_BASE_URL
     assert "transport" in config.client_kwargs
+
+
+def test_resolve_provider_vercel_key(monkeypatch):
+    monkeypatch.delenv("JEV_PROVIDER", raising=False)
+    config = resolve_provider("vck_abc123")
+    assert config.name == "vercel"
+    assert config.model == VERCEL_MODEL
+    assert config.client_kwargs == {"base_url": VERCEL_BASE_URL}
+
+
+def test_env_override_forces_vercel(monkeypatch):
+    monkeypatch.setenv("JEV_PROVIDER", "vercel")
+    config = resolve_provider("ts-live-abc123")
+    assert config.name == "vercel"
+    assert config.model == VERCEL_MODEL
 
 
 def test_resolve_provider_missing_key_defaults_native(monkeypatch):
