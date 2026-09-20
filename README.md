@@ -1,5 +1,7 @@
 # hdd-analyzer
 
+![hdd-analyzer walking a drive, scanning files with an LLM, and ranking the keepers](promo/hdd-analyzer.gif)
+
 Use Jev (TypeSafe's System One model) to triage old hard drives for
 semantically valuable files. It walks a drive for free, estimates the token
 and dollar budget for classifying every file, then runs a capped LLM scan
