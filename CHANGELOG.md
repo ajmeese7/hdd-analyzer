@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1 - 2026-09-21
+
+- README: link the demo GIF by absolute GitHub URL so it renders on PyPI.
+
 ## 1.0.0 - 2026-09-21
 
 - `walk`: free, deterministic drive inventory with content and metadata dedupe, layered skip rules for dependency/build caches, and per-extension categorization.

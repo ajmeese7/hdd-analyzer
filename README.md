@@ -1,7 +1,7 @@
 # hdd-analyzer
 
 <p align="center">
-  <img src="promo/hdd-analyzer.gif" alt="hdd-analyzer walking a drive, scanning files with an LLM, and ranking the keepers">
+  <img src="https://raw.githubusercontent.com/ajmeese7/hdd-analyzer/master/promo/hdd-analyzer.gif" alt="hdd-analyzer walking a drive, scanning files with an LLM, and ranking the keepers">
 </p>
 
 Old hard drives pile up faster than anyone can manually sort them, and most of what is on them is "dark data": junk, caches, and installers with a handful of genuinely irreplaceable files buried inside. hdd-analyzer walks a drive for free, estimates the token and dollar budget to have [Jev](https://typesafe.ai) (TypeSafe's [System One](https://docs.typesafe.ai/concepts/system-one) decision model, also served through [OpenRouter](https://openrouter.ai/typesafe/jev-1.13)) read every file, then runs a capped classification pass and produces a ranked report so a human can decide what is worth keeping before the drive gets wiped. Cheap, fast inference has made this kind of exhaustive per-file triage practical in a way it was not a few years ago.
