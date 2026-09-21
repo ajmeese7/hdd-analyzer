@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 - 2026-09-21
 
 - `scan --prefilter`: one Jev call per directory listing (directories with 10+ files) before any per-file call; directories scoring below 0.05 are skipped. Halved the calls on a 50k-file profile drive while keeping 214 of 218 content-verified credential hits (all of those valued 2.0+), every file valued 2.5+, and 97.7% of notable rows; under 1% overhead on a curated archive. Decisions are written to `runs/NAME/prefilter.jsonl`.
 - `EXCERPT_CHAR_CAP` 6000 to 3000: 28% fewer tokens on content calls; measured at the rerun noise floor for notable decisions (docs/EXPERIMENTS-2026-09.md).
