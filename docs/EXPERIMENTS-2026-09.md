@@ -64,9 +64,23 @@ The prefilter pays for itself on junk-heavy drives and is neutral on curated one
 
 `scan --only-name-only` on both runs (7,171 and 745 calls) upgraded 8,139 rows from name-only to content-verified, found zero new credential hits, and added 175 notable rows, all css/svg qualifying through `original_work`. Low value; the original name-only judgments were right about the junk.
 
+## Rubric v2 rescan
+
+`annotate --all` backfilled `extraction_status` on 29,886 (`f-users`) and 30,000-odd (`wsl-home`) legacy rows, which exposed a second problem: those rows were scored under rubric v1, whose `irreplaceable` question happily gave 0.8 to editor logs at value 0.1. Previously hidden as "unknown" verification, they became content-verified notable files overnight. `scan --outdated-rubric` was added and both runs were brought entirely onto rubric v2 (29,990 and 30,609 calls, zero errors, roughly $3.90 at list price).
+
+| run | rule | notable before | notable after | verified credential hits before / after |
+| --- | --- | --- | --- | --- |
+| f-users | current | 5,734 | 4,355 | 218 / 218 |
+| f-users | proposed (no `original_work`) | 3,108 | 820 | 218 / 218 |
+| wsl-home | current | 24,818 | 22,823 | 680 / 679 |
+| wsl-home | proposed | 23,485 | 20,976 | 680 / 679 |
+
+The 820 on `f-users` qualify as value (513), credentials (159), financial/legal (93), personal (43), irreplaceable (12), and cluster in Downloads, Screenshots, Quicken backups, an Obsidian vault, and VS Code history. On `wsl-home` the 20,976 are 13,678 mail messages, 3,706 PDFs, and 1,625 docx files qualifying mostly as personal or financial/legal: that drive is a curated archive and the count is real.
+
 ## Recommendations
 
 1. Cut `EXCERPT_CHAR_CAP` to 3000. Measured cost of doing so is inside the determinism noise.
-2. Change the inclusion rule so `original_work` alone does not make a file notable. This is what makes the `f-users` report readable and it is what the `irreplaceable` signal already says.
+2. Change the inclusion rule so `original_work` alone does not make a file notable. With both runs on rubric v2 this takes `f-users` from 4,355 notable rows to 820 without touching a single verified credential hit, and it is what the `irreplaceable` signal already says.
 3. Build the prefilter as `scan --prefilter` (directory calls for directories with 10 or more candidate files, skip below 0.10, always scan the rest). Saves roughly two thirds of the calls on the kind of drive this tool exists for and cannot lose more than the directory-call overhead on the other kind.
 4. Leave the question schema alone.
+5. Bump `RUBRIC_VERSION` whenever a question changes and run `scan --outdated-rubric` afterwards; mixed-version results are worse than either version alone.
