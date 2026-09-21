@@ -190,6 +190,33 @@ mail client's local database file that merely indexes mail stored
 elsewhere) and target genuinely unique human-created or human-received
 content instead.
 
+## Directory prefilter (`scan --prefilter`, prefilter.py)
+
+Optional first stage before extraction. After `eligible_records` picks the
+candidates, every directory holding at least one candidate and at least
+`PREFILTER_MIN_FILES` (10) inventory files gets one Jev call with a listing:
+file count, total bytes, extension histogram (top 15), up to 40 file names
+sampled evenly through the sorted listing, and child directory names. Two
+questions: `worth_scanning` (noul) and `kind` (choice over user_content,
+owner_code, third_party, app_state, system). Directories scoring below
+`PREFILTER_SKIP_BELOW` (0.05) have their candidates dropped before
+extraction; directories under the floor, or whose call failed, keep every
+file. Decisions are appended to `runs/NAME/prefilter.jsonl` (latest
+successful row per path wins; failed rows are retried) so a re-run reuses
+them and the human can audit what was skipped. Directory calls are billed
+through the same `BudgetTracker` and the whole stage is skipped if their
+worst-case cost alone would breach the cap.
+
+The floor and threshold come from docs/EXPERIMENTS-2026-09.md. In a
+production run over a 50k-file profile drive, 10 files and 0.05 halved the
+calls while keeping 214 of 218 content-verified credential hits (all 84
+valued 2.0 or higher), every file valued 2.5 or higher, and 97.7% of
+notable rows; 0.10 would have saved 62% but dropped a fifth of the
+credential hits (VS Code local-history snapshots). On a curated archive
+nothing could be skipped and the listing calls cost under 1%. Without the
+floor that drive (2.8 files per directory) was a 34% net loss, which is why
+small directories are never asked about.
+
 ## Budget + safety
 
 - Price constant: $0.042 per 1M input tokens, output free. Live spend from response.usage.input_tokens (fallback: len(prompt)/4).
@@ -325,6 +352,6 @@ Output, written to `runs/NAME/manifest/` (or `--out`):
 
 ## Layout
 
-hdd_analyzer/{__init__.py, cli.py (argparse), config.py, walker.py, extract.py, jev.py, jev_provider.py, scan.py, ocr.py, report.py, report_html.py, templates/report.html, annotate.py, manifest.py, paths.py}
+hdd_analyzer/{__init__.py, cli.py (argparse), config.py, walker.py, extract.py, jev.py, jev_provider.py, scan.py, prefilter.py, ocr.py, report.py, report_html.py, templates/report.html, annotate.py, manifest.py, paths.py}
 tests/ for pure logic only (skip rules, categorization, excerpt sanitization, budget accounting, OCR selection/resolution, manifest selection/rollup). No mocks, no network, no tesseract invocation in tests.
 Console script: `hdd-analyzer = hdd_analyzer:main` in pyproject (re-exported from `cli.main`).

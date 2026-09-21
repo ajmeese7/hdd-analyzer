@@ -61,6 +61,7 @@ hdd-analyzer manifest --run olddrive
 - `walk` is a pure filesystem pass: no network calls, no API spend.
 - Duplicate files are deduped by content hash (text/code/doc) or by size and filename (everything else), so Jev never classifies the same file twice.
 - Dependency caches, build output, and other junk directories (`node_modules`, `.git`, `AppData\Local`, and dozens more) are skipped before they ever hit the candidate list.
+- `scan --prefilter` asks Jev about each directory listing first (only directories with 10 or more files) and skips the files of directories it judges not worth reading. Measured on a 50k-file Windows profile: half the calls, with 214 of 218 content-verified credential hits (every one valued 2.0 or higher), every file valued 2.5 or higher, and 97.7% of notable rows still found; on a curated Documents archive it skips nothing and costs under 1%. Decisions land in `runs/NAME/prefilter.jsonl` so you can see exactly what was skipped.
 - `estimate` and `scan` print the candidate count, estimated tokens, and estimated dollar cost, and `scan` asks for interactive `y` confirmation before spending anything (skip with `--yes`).
 - `scan` enforces a hard spend cap (`--cap`, default $5) before dispatching each batch, using actual spend so far plus a worst-case estimate of the in-flight batch.
 - A preflight canary call and a circuit breaker abort the scan immediately on authentication or billing errors (HTTP 401/403/402), instead of burning through the candidate list on a broken key.
@@ -97,7 +98,7 @@ hdd-analyzer report --run olddrive
 
 - `walk ROOT --run NAME [--include SUBPATH ...]` - free, deterministic inventory walk. Writes `runs/NAME/inventory.jsonl`.
 - `estimate --run NAME` - token and dollar estimate for a scan. No network calls.
-- `scan --run NAME [--cap USD] [--limit N] [--yes] [--dry-run] [--concurrency N] [--rpm N] [--only-name-only] [--outdated-rubric] [--exclude-ext EXT[,EXT...]] [--from-ocr]` - local extraction plus one Jev call per file, under a hard spend cap. Appends to `runs/NAME/results.jsonl` and is resumable. `--rpm` paces requests for rate-limited providers (Vercel AI Gateway's free tier allows 30 per minute; use `--rpm 28`). `--outdated-rubric` re-scores every row still carrying an older rubric version, since scores from different rubric versions are not comparable.
+- `scan --run NAME [--cap USD] [--limit N] [--yes] [--dry-run] [--concurrency N] [--rpm N] [--prefilter] [--only-name-only] [--outdated-rubric] [--exclude-ext EXT[,EXT...]] [--from-ocr]` - local extraction plus one Jev call per file, under a hard spend cap. Appends to `runs/NAME/results.jsonl` and is resumable. `--rpm` paces requests for rate-limited providers (Vercel AI Gateway's free tier allows 30 per minute; use `--rpm 28`). `--outdated-rubric` re-scores every row still carrying an older rubric version, since scores from different rubric versions are not comparable. `--prefilter` triages directories before any per-file call (see above).
 - `annotate --run NAME [--all] [--top N] [--min-prob P]` - backfills `metadata_only`/`extraction_status` onto existing results by re-running local extraction only, zero API calls.
 - `ocr --run NAME [--top N] [--all] [--min-value V] [--limit N]` - local, free OCR pass over an existing run's name-only image and no-text-PDF rows.
 - `report --run NAME [--top N] [--min-prob P] [--min-value V]` - renders `runs/NAME/report.md`, `report.csv`, and `report.html`, ranked overall and per category. `--min-value` and `--min-prob` set which files count as notable in the HTML report; the defaults match `manifest`.
@@ -108,6 +109,7 @@ hdd-analyzer report --run olddrive
 - `runs/NAME/inventory.jsonl` - one row per walked file: path, size, mtime, extension, category, dedupe key.
 - `runs/NAME/walk-errors.log` - files the walker could not read (permissions, long paths).
 - `runs/NAME/results.jsonl` - one row per scanned file: all Jev probabilities, value score, extraction status, tokens used.
+- `runs/NAME/prefilter.jsonl` - with `scan --prefilter`, one row per directory asked about: its `worth_scanning` probability, `kind`, and file count. Directories below 0.05 were skipped.
 - `runs/NAME/ocr.jsonl` - OCR excerpts for name-only images and no-text PDFs; contains real file content, keep it out of version control.
 - `runs/NAME/report.md` / `report.csv` - the ranked report, overall and per category.
 - `runs/NAME/report.html` - self-contained interactive report: summary tiles, the directories holding the most notable files, a collapsible directory tree with notable/scanned counts per subtree, and a searchable, filterable table of every notable file. Contains paths and scores only, never file content.

@@ -12,6 +12,7 @@ from typing import Any
 
 from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy
 
+from hdd_analyzer import prefilter as prefilter_mod
 from hdd_analyzer.budget import BudgetTracker, estimate_tokens, estimate_worst_case_tokens, tokens_to_cost
 from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY, PER_CALL_OVERHEAD_TOKENS, categorize
 from hdd_analyzer.extract import _extraction_eligible, extract_excerpt, extract_excerpt_async
@@ -426,6 +427,9 @@ class ScanOutcome:
     stopped_at_cap: bool = False
     errors: int = 0
     aborted_reason: str | None = None
+    prefilter_asked: int = 0
+    prefilter_skipped_directories: int = 0
+    prefilter_skipped_files: int = 0
 
 
 async def _extract_worker(
@@ -522,6 +526,7 @@ async def run_scan(
     excerpt_override: dict[str, str] | None = None,
     rpm: float | None = None,
     skip_metadata_only: bool | None = None,
+    prefilter: bool = False,
 ) -> ScanOutcome:
     """Dispatch classification calls for unresolved candidates, batch by batch.
 
@@ -537,7 +542,9 @@ async def run_scan(
     cannot be read; it defaults to on for a targeted `only_keys` rescan,
     since re-sending a name-only row reproduces the verdict already on
     disk, and `--outdated-rubric` turns it off because a stale score is
-    stale whether or not the file was readable.
+    stale whether or not the file was readable. `prefilter` asks Jev about
+    each directory listing first and drops the files of directories judged
+    not worth reading (see prefilter.py and `--prefilter`).
     """
     if skip_metadata_only is None:
         skip_metadata_only = only_keys is not None
@@ -556,9 +563,6 @@ async def run_scan(
     print(f"jev provider: {provider.name} (model={provider.model})")
 
     tracker_state = SystemicErrorTracker()
-    extraction_task = asyncio.create_task(
-        _run_extraction_pipeline(to_extract, out_queue, concurrency, excerpt_override, skip_metadata_only=skip_metadata_only)
-    )
 
     async with AsyncTypeSafeClient(
         api_key=api_key, model=provider.model, retry=RETRY_POLICY, **provider.client_kwargs
@@ -567,9 +571,15 @@ async def run_scan(
         if canary_exc is not None and is_systemic_error(canary_exc):
             outcome.aborted_reason = tracker_state.canary_abort_reason(canary_exc)
             print(outcome.aborted_reason, file=sys.stderr)
-            await _cancel_and_wait(extraction_task)
             outcome.spent_usd = tracker.spent_usd
             return outcome
+
+        if prefilter:
+            to_extract = await _run_prefilter(client, run_dir, records, to_extract, tracker, semaphore, pacer, outcome)
+
+        extraction_task = asyncio.create_task(
+            _run_extraction_pipeline(to_extract, out_queue, concurrency, excerpt_override, skip_metadata_only=skip_metadata_only)
+        )
 
         with open(results_path, "a", encoding="utf-8") as out:
             extraction_done = False
@@ -611,6 +621,34 @@ async def run_scan(
     await _cancel_and_wait(extraction_task)
     outcome.spent_usd = tracker.spent_usd
     return outcome
+
+
+async def _run_prefilter(
+    client: AsyncTypeSafeClient,
+    run_dir: Path,
+    records: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    tracker: BudgetTracker,
+    semaphore: asyncio.Semaphore,
+    pacer: Pacer,
+    outcome: ScanOutcome,
+) -> list[dict[str, Any]]:
+    """Directory-level triage before extraction; returns the candidates that survive it."""
+    listings = prefilter_mod.build_listings(records, candidates)
+    undecided = {path: listing for path, listing in listings.items() if path not in prefilter_mod.load_decisions(run_dir)}
+    if tracker.would_exceed_cap(prefilter_mod.estimated_cost(undecided)):
+        print("prefilter: skipped, directory calls alone would exceed the cap", file=sys.stderr)
+        return candidates
+    decisions = await prefilter_mod.decide(client, listings, run_dir, tracker, semaphore, pacer)
+    applied = prefilter_mod.apply(candidates, listings, decisions)
+    outcome.prefilter_asked = applied.asked
+    outcome.prefilter_skipped_directories = applied.skipped_directories
+    outcome.prefilter_skipped_files = applied.skipped_files
+    print(
+        f"prefilter: asked about {applied.asked} directories, skipping {applied.skipped_directories} "
+        f"holding {applied.skipped_files} of {len(candidates)} candidate files (see {run_dir / prefilter_mod.PREFILTER_FILE})"
+    )
+    return applied.kept
 
 
 async def _cancel_and_wait(task: asyncio.Task) -> None:

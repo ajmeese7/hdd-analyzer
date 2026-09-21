@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `scan --prefilter`: one Jev call per directory listing (directories with 10+ files) before any per-file call; directories scoring below 0.05 are skipped. Halved the calls on a 50k-file profile drive while keeping 214 of 218 content-verified credential hits (all of those valued 2.0+), every file valued 2.5+, and 97.7% of notable rows; under 1% overhead on a curated archive. Decisions are written to `runs/NAME/prefilter.jsonl`.
 - `EXCERPT_CHAR_CAP` 6000 to 3000: 28% fewer tokens on content calls; measured at the rerun noise floor for notable decisions (docs/EXPERIMENTS-2026-09.md).
 - Inclusion rule (`manifest`, `report.html`): `original_work` alone no longer makes a verified row notable; value, credentials, personal, financial/legal, and irreplaceable still do. On a 50k-file profile drive this took the notable set from 4,355 rows to 820 without dropping a credential hit.
 - `scan --outdated-rubric` re-scores every row still carrying an older rubric version, name-only rows included. Mixed-version results are not comparable, and `annotate --all` had just exposed thousands of rubric-v1 rows as content-verified with stale scores.

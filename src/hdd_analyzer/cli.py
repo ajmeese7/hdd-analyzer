@@ -20,6 +20,7 @@ from hdd_analyzer import walker
 from hdd_analyzer.config import DEFAULT_CAP_USD, DEFAULT_CONCURRENCY
 from hdd_analyzer.manifest import MANIFEST_DEFAULT_MIN_PROB, MANIFEST_DEFAULT_MIN_VALUE
 from hdd_analyzer.ocr import OCR_DEFAULT_MIN_VALUE, OCR_DEFAULT_TOP_N
+from hdd_analyzer.prefilter import PREFILTER_MIN_FILES, PREFILTER_SKIP_BELOW
 from hdd_analyzer.report import DEFAULT_TOP_N, MIN_PROB_DEFAULT, MIN_VALUE_DEFAULT
 
 RUNS_DIR = Path("runs")
@@ -84,6 +85,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     print(f"estimated tokens: {estimate.estimated_tokens:,}")
     print(f"estimated cost: ${estimate.estimated_cost_usd:.4f}")
     print(f"hard cap: ${args.cap:.2f}")
+    if args.prefilter:
+        print("prefilter: on; directories judged not worth reading are dropped before extraction, so the real spend is usually lower")
 
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -118,6 +121,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             excerpt_override=excerpt_override,
             rpm=args.rpm,
             skip_metadata_only=False if args.outdated_rubric else None,
+            prefilter=args.prefilter,
         )
     )
 
@@ -242,6 +246,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--only-name-only",
         action="store_true",
         help="Restrict candidates to name-only-judged rows that today's extraction would actually retry.",
+    )
+    scan_parser.add_argument(
+        "--prefilter",
+        action="store_true",
+        help=(
+            f"Ask Jev about each directory listing first (directories with {PREFILTER_MIN_FILES}+ files) and skip the "
+            f"files of directories scoring below {PREFILTER_SKIP_BELOW}. Decisions are kept in runs/NAME/prefilter.jsonl."
+        ),
     )
     scan_parser.add_argument(
         "--outdated-rubric",
