@@ -27,7 +27,7 @@ def test_sanitize_excerpt_caps_length():
     raw = b"a" * 10_000
     result = sanitize_excerpt(raw)
     assert result is not None
-    assert len(result) <= 6000
+    assert len(result) <= 3000
 
 
 def test_extract_office_xml_skips_oversized_member_without_decompressing(tmp_path, monkeypatch):

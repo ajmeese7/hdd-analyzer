@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `EXCERPT_CHAR_CAP` 6000 to 3000: 28% fewer tokens on content calls; measured at the rerun noise floor for notable decisions (docs/EXPERIMENTS-2026-09.md).
+- Inclusion rule (`manifest`, `report.html`): `original_work` alone no longer makes a verified row notable; value, credentials, personal, financial/legal, and irreplaceable still do. On a 50k-file profile drive this took the notable set from 4,355 rows to 820 without dropping a credential hit.
 - `scan --outdated-rubric` re-scores every row still carrying an older rubric version, name-only rows included. Mixed-version results are not comparable, and `annotate --all` had just exposed thousands of rubric-v1 rows as content-verified with stale scores.
 - `scan --rpm N` paces classification requests for rate-limited providers (Vercel AI Gateway's free tier allows 30 per minute), and `--concurrency N` exposes the worker count.
 - `scan` retries 429s and 5xx with a longer backoff (6 attempts, 1s to 20s) instead of the SDK default that turned a gateway burst into error rows.

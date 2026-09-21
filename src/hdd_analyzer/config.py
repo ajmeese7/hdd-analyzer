@@ -8,7 +8,10 @@ PRICE_PER_MTOK = 0.042
 PER_CALL_OVERHEAD_TOKENS = 850
 DEFAULT_CAP_USD = 5.0
 DEFAULT_CONCURRENCY = 8
-EXCERPT_CHAR_CAP = 6000
+# Measured September 2026 on 561 content-verified files: 3000 vs 6000 chars
+# moved 0.7% of notable decisions (the 6000-vs-6000 rerun noise floor was
+# 0.2%) and cut tokens on content calls by 28%. 1500 cost 3.2% of decisions.
+EXCERPT_CHAR_CAP = 3000
 EXTRACT_READ_BYTES = 16 * 1024
 DEDUPE_SAMPLE_BYTES = 256 * 1024
 SIZE_FLOOR_BYTES = 32

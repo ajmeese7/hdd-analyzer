@@ -27,6 +27,12 @@ TOP_DIRS = 30
 # name-only hit in, say, "irreplaceable" (a game save) is too weak to act on
 # without ever having read the file.
 NAME_ONLY_ELIGIBLE_CATEGORIES = ("credentials", "financial_legal", "personal")
+# original_work is deliberately absent: authored code is usually also in a
+# git remote, and Jev already scores such files low on `irreplaceable`
+# (measured mean 0.20 on 450 content-verified original_work hits). Letting
+# original_work qualify on its own turned an authored-code tree into 4,355
+# "notable" rows on a 50k-file drive; without it the same drive has 820.
+VERIFIED_ELIGIBLE_CATEGORIES = ("credentials", "financial_legal", "personal", "irreplaceable")
 _VERIFIED_LABELS = ("content", "ocr")
 
 
@@ -36,9 +42,10 @@ def is_manifest_included(row: dict[str, Any], min_value: float, min_prob: float)
     Excludes error rows and the "generated" category outright (in practice
     "generated" rows never reach results.jsonl at all, since scan never
     sends them to Jev, but the check is explicit here rather than assumed).
-    Verified rows qualify on the general value_score-or-any-probability
-    threshold; name-only (and legacy "unknown") rows qualify only through a
-    probability >= min_prob in one of the three name-trustworthy categories.
+    Verified rows qualify on value_score or on a probability >= min_prob in
+    any category except original_work; name-only (and legacy "unknown")
+    rows qualify only through a probability >= min_prob in one of the three
+    name-trustworthy categories.
     """
     if row.get("error"):
         return False
@@ -46,16 +53,16 @@ def is_manifest_included(row: dict[str, Any], min_value: float, min_prob: float)
         return False
 
     probabilities = row.get("probabilities") or {}
+    categories = VERIFIED_ELIGIBLE_CATEGORIES if verified_label(row) in _VERIFIED_LABELS else NAME_ONLY_ELIGIBLE_CATEGORIES
 
     if verified_label(row) in _VERIFIED_LABELS:
         value_score = row.get("value_score")
-        meets_value = isinstance(value_score, (int, float)) and value_score >= min_value
-        meets_prob = any(isinstance(v, (int, float)) and v >= min_prob for v in probabilities.values())
-        return meets_value or meets_prob
+        if isinstance(value_score, (int, float)) and value_score >= min_value:
+            return True
 
     return any(
         isinstance(probabilities.get(category), (int, float)) and probabilities[category] >= min_prob
-        for category in NAME_ONLY_ELIGIBLE_CATEGORIES
+        for category in categories
     )
 
 

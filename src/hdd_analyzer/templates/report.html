@@ -249,7 +249,7 @@
   document.getElementById("title").textContent = "hdd-analyzer report: " + DATA.run;
   document.getElementById("subtitle").innerHTML =
     "Generated " + DATA.generated_at + ". Notable = value ≥ <code>" + DATA.thresholds.min_value +
-    "</code> or any category probability ≥ <code>" + MIN_PROB + "</code> (name-only rows only qualify via credentials, financial/legal, or personal).";
+    "</code> or credentials / financial-legal / personal / irreplaceable probability ≥ <code>" + MIN_PROB + "</code>; original work alone does not qualify, and name-only rows only qualify via credentials, financial/legal, or personal.";
   var S = DATA.summary;
   var tiles = [
     ["Files scanned", fmtInt(S.scanned), S.errors ? fmtInt(S.errors) + " errors" : "no errors"],

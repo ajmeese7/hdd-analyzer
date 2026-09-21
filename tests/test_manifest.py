@@ -26,9 +26,14 @@ def test_verified_row_included_via_value_score_threshold():
     assert is_manifest_included(row, min_value=2.0, min_prob=0.7) is True
 
 
-def test_verified_row_included_via_any_category_probability():
-    row = _row(extraction_status="ok", value_score=0.0, probabilities={"original_work": 0.9})
+def test_verified_row_included_via_category_probability():
+    row = _row(extraction_status="ok", value_score=0.0, probabilities={"irreplaceable": 0.9})
     assert is_manifest_included(row, min_value=2.0, min_prob=0.7) is True
+
+
+def test_verified_row_not_included_through_original_work_alone():
+    row = _row(extraction_status="ok", value_score=1.5, probabilities={"original_work": 0.99, "irreplaceable": 0.2})
+    assert is_manifest_included(row, min_value=2.0, min_prob=0.7) is False
 
 
 def test_verified_row_excluded_below_both_thresholds():

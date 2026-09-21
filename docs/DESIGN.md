@@ -69,7 +69,7 @@ Tradeoff: two differently-named copies of the same non-text file (or of an overs
 - image/av/archive: no content; judged on metadata only (path, name, size, mtime), marked `metadata_only`.
 - generated (Unity `.meta` and similar): no content, excluded from candidates entirely before extraction is even considered (see Walk stage).
 - binary (no recognized extension): a content-sniffing fallback (see below) catches plain-text files hiding behind an unknown or missing extension before giving up on them.
-- Excerpt hard cap ~6000 chars (~1500 tokens) per file.
+- Excerpt hard cap 3000 chars (~750 tokens) per file; measured against 6000 in September 2026 as a 28% token cut at the rerun noise floor (see EXPERIMENTS-2026-09.md).
 
 ### Content sniffing fallback for unrecognized-extension binaries
 
@@ -286,8 +286,13 @@ never writes either.
 Selection (`is_manifest_included`, defaults `--min-value 2.0`, `--min-prob
 0.7`): a row is excluded outright if it has an `error` or its category is
 `generated`. A content-verified or OCR-verified row (`verified_label` in
-`content`/`ocr`) is included if its `value_score >= min-value` OR any single
-category probability `>= min-prob`. A name-only (or legacy `unknown`) row is
+`content`/`ocr`) is included if its `value_score >= min-value` OR its
+probability for `credentials`, `financial_legal`, `personal`, or
+`irreplaceable` is `>= min-prob`. `original_work` never qualifies a row on
+its own: authored code usually also lives in a git remote, Jev scores it
+low on `irreplaceable` anyway, and letting it through turned one drive's
+authored-code tree into thousands of "notable" rows (EXPERIMENTS-2026-09.md).
+A name-only (or legacy `unknown`) row is
 trusted far less: it is included only if its probability for `credentials`,
 `financial_legal`, or `personal` is `>= min-prob`, never through
 `value_score` alone and never through the other two categories
