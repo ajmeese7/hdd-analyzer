@@ -60,6 +60,17 @@ Only directories with at least 10 files get a call; smaller ones are always scan
 
 The prefilter pays for itself on junk-heavy drives and is neutral on curated ones; with the 10-file floor it was never net-negative. Without the floor, `wsl-home` (32,621 directories for 92,674 files, 89% judged user content) is a 34% net loss. The files it drops on `f-users` at 0.10 are dominated by per-file false positives: Unity asset shaders scored as original work, VS Code history snapshots, ROM folders. The `kind` choice is a usable directory-level classifier on its own (`f-users`: 2,909 app_state, 2,529 third_party, 1,358 owner_code, 252 user_content).
 
+### Production validation
+
+`scan --prefilter` was then run for real over the `f-users` inventory into a fresh run and compared with the full rubric-v2 baseline. The simulation above scored credential recall against the 60 verified hits that existed before the rubric rescan; against the 218 that exist now, 0.10 kept only 174 (79.8%), the misses being 37 VS Code local-history snapshots of edited source files (`AppData\Roaming\Code\User\History\<hash>\XXXX.js`, directory scored 0.07 as app_state) plus extension `package.json` false positives. At 0.05 the same decisions keep 214 of 218 (98.2%), including all 84 valued 2.0 or higher; the four misses are extension `package.json` files. Final production numbers at 0.05 and a 10-file floor: 887 directory calls, 24,366 per-file calls instead of 50,498 (50.0% fewer), 90 of 90 files valued 2.5 or higher, 801 of 820 notable rows. The shipped default is 0.05.
+
+| threshold | saving | verified credential recall | of those valued 2.0+ | notable recall | value 2.5+ recall |
+| --- | --- | --- | --- | --- | --- |
+| 0.03 | 21.0% | 100% | 100% | 99.3% | 100% |
+| 0.05 | 50.0% | 98.2% | 100% | 97.7% | 100% |
+| 0.075 | 56.7% | 91.3% | 100% | 95.0% | 100% |
+| 0.10 | 62.1% | 79.8% | 100% | 90.1% | 100% |
+
 ## Name-only rescans
 
 `scan --only-name-only` on both runs (7,171 and 745 calls) upgraded 8,139 rows from name-only to content-verified, found zero new credential hits, and added 175 notable rows, all css/svg qualifying through `original_work`. Low value; the original name-only judgments were right about the junk.
@@ -79,8 +90,8 @@ The 820 on `f-users` qualify as value (513), credentials (159), financial/legal 
 
 ## Recommendations
 
-1. Cut `EXCERPT_CHAR_CAP` to 3000. Measured cost of doing so is inside the determinism noise.
-2. Change the inclusion rule so `original_work` alone does not make a file notable. With both runs on rubric v2 this takes `f-users` from 4,355 notable rows to 820 without touching a single verified credential hit, and it is what the `irreplaceable` signal already says.
-3. Build the prefilter as `scan --prefilter` (directory calls for directories with 10 or more candidate files, skip below 0.10, always scan the rest). Saves roughly two thirds of the calls on the kind of drive this tool exists for and cannot lose more than the directory-call overhead on the other kind.
+1. Cut `EXCERPT_CHAR_CAP` to 3000. Measured cost of doing so is inside the determinism noise. Shipped.
+2. Change the inclusion rule so `original_work` alone does not make a file notable. With both runs on rubric v2 this takes `f-users` from 4,355 notable rows to 820 without touching a single verified credential hit, and it is what the `irreplaceable` signal already says. Shipped.
+3. Build the prefilter as `scan --prefilter` (directory calls for directories with 10 or more files, skip below 0.05, always scan the rest). Halves the calls on the kind of drive this tool exists for and cannot lose more than the directory-call overhead on the other kind. Shipped.
 4. Leave the question schema alone.
 5. Bump `RUBRIC_VERSION` whenever a question changes and run `scan --outdated-rubric` afterwards; mixed-version results are worse than either version alone.
