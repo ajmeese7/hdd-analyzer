@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `scan --outdated-rubric` re-scores every row still carrying an older rubric version, name-only rows included. Mixed-version results are not comparable, and `annotate --all` had just exposed thousands of rubric-v1 rows as content-verified with stale scores.
 - `scan --rpm N` paces classification requests for rate-limited providers (Vercel AI Gateway's free tier allows 30 per minute), and `--concurrency N` exposes the worker count.
 - `scan` retries 429s and 5xx with a longer backoff (6 attempts, 1s to 20s) instead of the SDK default that turned a gateway burst into error rows.
 - `load_results` never lets an error row supersede a successful judgment, so a failed rescan cannot hide a prior result from the report or from `--only-name-only` selection.

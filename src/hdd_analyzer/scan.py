@@ -150,6 +150,25 @@ def load_ocr_classified_keys(run_dir: Path) -> set[str]:
     return {r["dedupe_key"] for r in load_results(run_dir) if r.get("extraction_status") == EXTRACTION_STATUS_OCR}
 
 
+def load_outdated_rubric_keys(run_dir: Path) -> set[str]:
+    """Dedupe keys whose latest valid result was scored under an older rubric.
+
+    Scores from different rubric versions are not comparable (see
+    jev.RUBRIC_VERSION), so once a rubric changes, every row still carrying
+    the old version is worth re-scoring; `scan --outdated-rubric` does that,
+    name-only rows included, since their old scores are just as stale.
+    """
+    from hdd_analyzer.report import load_results
+
+    if not (run_dir / "results.jsonl").exists():
+        return set()
+    return {
+        row["dedupe_key"]
+        for row in load_results(run_dir)
+        if not row.get("error") and row.get("rubric_version") != RUBRIC_VERSION
+    }
+
+
 def load_name_only_keys(run_dir: Path) -> set[str]:
     """Dedupe keys worth a targeted `scan --only-name-only` re-classification.
 
@@ -502,6 +521,7 @@ async def run_scan(
     exclude_exts: set[str] | None = None,
     excerpt_override: dict[str, str] | None = None,
     rpm: float | None = None,
+    skip_metadata_only: bool | None = None,
 ) -> ScanOutcome:
     """Dispatch classification calls for unresolved candidates, batch by batch.
 
@@ -513,8 +533,14 @@ async def run_scan(
     `exclude_exts` drops extensions on top of that (see `--exclude-ext`).
     `excerpt_override` short-circuits extraction for the given dedupe keys
     (see `--from-ocr`). `rpm` caps classification requests per minute (see
-    `--rpm`).
+    `--rpm`). `skip_metadata_only` drops candidates whose content still
+    cannot be read; it defaults to on for a targeted `only_keys` rescan,
+    since re-sending a name-only row reproduces the verdict already on
+    disk, and `--outdated-rubric` turns it off because a stale score is
+    stale whether or not the file was readable.
     """
+    if skip_metadata_only is None:
+        skip_metadata_only = only_keys is not None
     records = load_inventory(run_dir)
     resumed_keys = load_resumed_keys(run_dir)
     to_extract = eligible_records(records, resumed_keys, limit, only_keys, exclude_exts)
@@ -531,7 +557,7 @@ async def run_scan(
 
     tracker_state = SystemicErrorTracker()
     extraction_task = asyncio.create_task(
-        _run_extraction_pipeline(to_extract, out_queue, concurrency, excerpt_override, skip_metadata_only=only_keys is not None)
+        _run_extraction_pipeline(to_extract, out_queue, concurrency, excerpt_override, skip_metadata_only=skip_metadata_only)
     )
 
     async with AsyncTypeSafeClient(

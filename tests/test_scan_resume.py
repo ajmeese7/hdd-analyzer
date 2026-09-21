@@ -1,7 +1,8 @@
 import json
 
 from hdd_analyzer.budget import BudgetTracker
-from hdd_analyzer.scan import bill_result, build_candidates, eligible_records, load_name_only_keys, load_resumed_keys
+from hdd_analyzer.jev import RUBRIC_VERSION
+from hdd_analyzer.scan import load_outdated_rubric_keys, bill_result, build_candidates, eligible_records, load_name_only_keys, load_resumed_keys
 
 
 def test_load_resumed_keys_empty_when_no_results_file(tmp_path):
@@ -329,3 +330,24 @@ def test_build_candidates_excerpt_override_ignores_keys_not_present(tmp_path):
     assert len(candidates) == 1
     assert candidates[0].excerpt == "hello world"
     assert candidates[0].extraction_status == "ok"
+
+
+def test_load_outdated_rubric_keys_selects_rows_scored_under_an_older_rubric(tmp_path):
+    rows = [
+        {"dedupe_key": "legacy", "value_score": 1.0, "error": None},
+        {"dedupe_key": "old", "value_score": 1.0, "rubric_version": RUBRIC_VERSION - 1, "error": None},
+        {"dedupe_key": "current", "value_score": 1.0, "rubric_version": RUBRIC_VERSION, "error": None},
+        {"dedupe_key": "failed", "error": "boom"},
+    ]
+    (tmp_path / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    assert load_outdated_rubric_keys(tmp_path) == {"legacy", "old"}
+
+
+def test_load_outdated_rubric_keys_uses_the_latest_valid_row(tmp_path):
+    rows = [
+        {"dedupe_key": "a", "value_score": 1.0, "error": None},
+        {"dedupe_key": "a", "value_score": 1.0, "rubric_version": RUBRIC_VERSION, "error": None},
+        {"dedupe_key": "a", "error": "429"},
+    ]
+    (tmp_path / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    assert load_outdated_rubric_keys(tmp_path) == set()

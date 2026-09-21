@@ -65,6 +65,9 @@ def _parse_exclude_ext(value: str | None) -> set[str] | None:
 def _cmd_scan(args: argparse.Namespace) -> int:
     run_dir = _run_dir(args.run)
     only_keys = scan_mod.load_name_only_keys(run_dir) if args.only_name_only else None
+    if args.outdated_rubric:
+        outdated = scan_mod.load_outdated_rubric_keys(run_dir)
+        only_keys = outdated if only_keys is None else only_keys & outdated
     exclude_exts = _parse_exclude_ext(args.exclude_ext)
 
     excerpt_override = None
@@ -114,6 +117,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             exclude_exts=exclude_exts,
             excerpt_override=excerpt_override,
             rpm=args.rpm,
+            skip_metadata_only=False if args.outdated_rubric else None,
         )
     )
 
@@ -238,6 +242,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--only-name-only",
         action="store_true",
         help="Restrict candidates to name-only-judged rows that today's extraction would actually retry.",
+    )
+    scan_parser.add_argument(
+        "--outdated-rubric",
+        action="store_true",
+        help="Restrict candidates to rows scored under an older rubric version and re-score them all, name-only included.",
     )
     scan_parser.add_argument(
         "--exclude-ext",
